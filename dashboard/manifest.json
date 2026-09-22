@@ -1,0 +1,8 @@
+{
+  "name": "protean-ordaprompt",
+  "label": "OrdaPrompt",
+  "description": "Manual fail-closed routing test for OrdaPrompt",
+  "icon": "GitBranch",
+  "version": "1.1.0",
+  "api": "plugin_api.py"
+}
