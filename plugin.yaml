@@ -5,7 +5,7 @@ version: 1.0.0
 # python_dependencies, license, homepage, tags) are additive and read regardless.
 manifest_version: 1
 api_version: 1
-description: "Fail-closed three-band classifier router for OrdaPilot request routing (topic + session utility). Ships a stdlib-only Python package, a CLI (python3 -m ordaprompt_router.cli) and an offline eval harness. Disclosure — sends nothing anywhere by default: the optional OpenRouter backend is disabled by policy and, when explicitly enabled, transports hashes and labels only. The automatic band is LOCKED OFF until calibration unlock criteria pass on real feedback data."
+description: "Jev-style comparative classifier for OrdaPilot. It compares all topic labels and session choices in one batch, including new-topic, ambiguous, and new-session options. It uses calibrated score and margin gates, weighs continuity against context cost and contamination, and abstains when uncertain. OpenRouter is optional for provisional new-label proposals and is disabled by default."
 author: ahrazzle
 license: MIT
 homepage: https://github.com/aska-digital/protean-ordaprompt

@@ -1,8 +1,16 @@
 # protean-ordaprompt
 
-Fail-closed three-band classifier router for OrdaPilot request routing — a bounded
-slice of the locked leo-arch spec (schemas 1.1–1.4, batch-compare adapter,
-three-band policy, session-utility gating, hashes-only receipts, calibration plan).
+Fail-closed Jev-style comparative classifier for OrdaPilot request routing. It is designed
+for Jev/OpenJEV-like NLI backends and compares all topic labels and session choices together,
+including `new topic`, `ambiguous`, and `new session` options. It uses calibrated score and
+margin gates, weighs session continuity against context cost and contamination, and abstains
+when uncertain.
+
+This release provides the routing layer and backend adapter boundary. It does not bundle a
+Jev model or start a model server. The default adapter is deterministic and offline; a
+Jev/OpenJEV-like backend can be connected explicitly through the adapter contract. OpenRouter
+is optional and reserved for proposing provisional new labels after a high-confidence novelty
+signal. It is disabled by default.
 
 Hermes Agent plugin. Installable via the curated plugin catalog entry
 `plugin-catalog/protean-ordaprompt.yaml` (in the hermes-agent repository) or directly:
