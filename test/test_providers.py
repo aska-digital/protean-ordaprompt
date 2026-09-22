@@ -250,10 +250,17 @@ class TestLocalOnlyPathUnchanged(KeyEnvTestCase):
     def test_receipt_field_set_is_the_baseline_24_without_providers(self):
         result = route(make_request(), make_candidates(with_sessions=True), RouterConfig())
         self.assertEqual(set(result.receipt.keys()), BASELINE_RECEIPT_FIELDS)
-        # the only additive receipt field is the optional fallback marker (D3); it is
-        # allowed by the schema but never EMITTED unless a declared chain fires
-        self.assertEqual(set(RECEIPT_FIELDS), BASELINE_RECEIPT_FIELDS | {"fallback_from"})
+        # the only additive receipt fields are optional blocks (D3 fallback marker,
+        # D8 profile surface); both are allowed by the schema but never EMITTED unless
+        # their cause occurred, so the local-only receipt stays byte-identical
+        self.assertEqual(
+            set(RECEIPT_FIELDS),
+            BASELINE_RECEIPT_FIELDS
+            | {"fallback_from", "profile_candidate_ids", "profile_scores", "profile_top", "profile_margin"},
+        )
         self.assertNotIn("fallback_from", result.receipt)
+        for optional in ("profile_candidate_ids", "profile_scores", "profile_top", "profile_margin"):
+            self.assertNotIn(optional, result.receipt)
         self.assertEqual(result.receipt["backend_used"], "synthetic")
         validate_receipt(result.receipt)
         assert_no_free_text(result.receipt)
@@ -843,10 +850,10 @@ class TestBatchSemantics(KeyEnvTestCase):
         transport = MockTransport([scores_body(good_scores()), scores_body(good_scores(SESSION_IDS))])
         backend = make_backend(transport)
         backend.batch_score(HANDLE, make_candidates(with_sessions=True), "topic")
-        self.assertEqual(backend.batch_calls, {"topic": 1, "session": 0})
+        self.assertEqual(backend.batch_calls, {"topic": 1, "session": 0, "profile": 0})
         self.assertEqual(transport.call_count, 1)
         backend.batch_score(HANDLE, make_candidates(with_sessions=True), "session")
-        self.assertEqual(backend.batch_calls, {"topic": 1, "session": 1})
+        self.assertEqual(backend.batch_calls, {"topic": 1, "session": 1, "profile": 0})
         self.assertEqual(transport.call_count, 2)
         for request in transport.requests:
             self.assertEqual(request.method, "POST")

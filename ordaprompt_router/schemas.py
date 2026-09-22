@@ -38,6 +38,23 @@ CONTAMINATION_FLAGS = (
 )
 BACKENDS = ("synthetic", "openrouter", "openjev")
 
+#: the closed comparison-surface domain (D8 / leo-provider-contract.md section 1).
+#: `profile` is the phase-2 additive member: the ABC already expresses "ONE call per
+#: surface, all candidates", so only this closed domain had to widen.  No signature
+#: change anywhere: pre-profile callers keep passing "topic" / "session".
+SURFACES = ("topic", "session", "profile")
+
+#: profile-surface sentinel.  Eligibility is computed UPSTREAM (by the caller) and
+#: arrives as the candidate set; the adapter never invents, widens or reorders it.
+#: The sentinel is an ordinary candidate in the same batch, exactly like `novel`,
+#: `ambiguous` and `new_session` -- it is what makes the abstain outcome explicit.
+PROFILE_SENTINELS = ("no_suitable_profile",)
+PROFILE_SENTINEL_ABSTAIN = PROFILE_SENTINELS[0]
+
+#: closed domains for the whitelisted profile metadata (ids/labels/enums only).
+PROFILE_SCOPES = ("global", "project", "session")
+PROFILE_PRIVACY_CLASSES = ("public", "internal", "private", "restricted")
+
 #: machine codes only -- never prose (leo-arch.md 1.4 field 24)
 ESCALATION_CODES = (
     "below_min_score",
@@ -54,6 +71,9 @@ ESCALATION_CODES = (
     "taxonomy_rejected",
     "novel_below_threshold",
     "legacy_mode",
+    #: additive (phase 2, D8): the explicit `no_suitable_profile` abstain candidate won
+    #: the profile surface.  A machine code, not prose; the domain stays closed.
+    "profile_abstain_argmax",
 )
 
 #: contamination weights, config-rev pinned (leo-arch.md section 3)
@@ -268,6 +288,10 @@ SESSION_FIELDS = (
     "idle_days",
     "contamination_flags",
 )
+#: the ONLY profile metadata that may ever leave the process (whitelist, D8 item 5):
+#: id, scope, privacy class and labels.  Nothing else is carried, and the payload
+#: builder is the single choke point that serialises it.
+PROFILE_FIELDS = ("profile_id", "scope", "privacy_class", "labels")
 CANDIDATE_SET_FIELDS = (
     "schema",
     "request_id",
@@ -275,6 +299,8 @@ CANDIDATE_SET_FIELDS = (
     "topic_sentinels",
     "sessions",
     "session_sentinels",
+    "profiles",
+    "profile_sentinels",
 )
 
 TOPIC_SENTINELS = ("novel", "ambiguous")
@@ -350,12 +376,68 @@ class SessionCandidate:
 
 
 @dataclass(frozen=True)
+class ProfileCandidate:
+    """One ELIGIBLE profile on the `profile` surface (D8).
+
+    Eligibility is decided UPSTREAM: the caller (Orda) computes which profiles may be
+    considered for this request and passes exactly that set.  The adapter adds nothing,
+    drops nothing and reorders nothing -- a reply that does not cover exactly this id
+    set is a hard ``ProviderContractError``.
+
+    ``labels`` are closed-domain id tokens (slugs), never display text.  ``scope`` and
+    ``privacy_class`` are closed enums, so no free text can be validated into a request
+    payload or a receipt.
+    """
+
+    profile_id: str
+    scope: str = "project"
+    privacy_class: str = "private"
+    labels: Sequence[str] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "scope": self.scope,
+            "privacy_class": self.privacy_class,
+            "labels": list(self.labels),
+        }
+
+    @classmethod
+    def from_dict(cls, obj: Any, path: str) -> "ProfileCandidate":
+        data = _closed(obj, PROFILE_FIELDS, path)
+        labels = data.get("labels", [])
+        _need(isinstance(labels, list), path + ".labels", "expected a list")
+        for index, label in enumerate(labels):
+            _need(
+                isinstance(label, str) and bool(SLUG_RE.match(label)),
+                "%s.labels[%d]" % (path, index),
+                "expected a label slug outside the closed id domain",
+            )
+        _need(
+            len(set(labels)) == len(labels),
+            path + ".labels",
+            "duplicate labels",
+        )
+        return cls(
+            profile_id=_str(data, "profile_id", path, SLUG_RE),
+            scope=_enum(data, "scope", PROFILE_SCOPES, path),
+            privacy_class=_enum(data, "privacy_class", PROFILE_PRIVACY_CLASSES, path),
+            labels=tuple(labels),
+        )
+
+
+@dataclass(frozen=True)
 class CandidateSet:
     request_id: str
     topics: Sequence[TopicCandidate]
     sessions: Sequence[SessionCandidate] = ()
     topic_sentinels: Sequence[str] = TOPIC_SENTINELS
     session_sentinels: Sequence[str] = SESSION_SENTINELS
+    #: phase-2 additive block (D8).  Absent/empty means "no profile surface": the
+    #: pre-profile path is byte-identical because nothing profile-related is called,
+    #: serialised or emitted.
+    profiles: Sequence[ProfileCandidate] = ()
+    profile_sentinels: Sequence[str] = PROFILE_SENTINELS
     schema: str = SCHEMA_CANDIDATE_SET
 
     def to_dict(self) -> Dict[str, Any]:
@@ -366,6 +448,8 @@ class CandidateSet:
             "topic_sentinels": list(self.topic_sentinels),
             "sessions": [s.to_dict() for s in self.sessions],
             "session_sentinels": list(self.session_sentinels),
+            "profiles": [p.to_dict() for p in self.profiles],
+            "profile_sentinels": list(self.profile_sentinels),
         }
 
     # -- candidate id views -------------------------------------------------
@@ -376,6 +460,34 @@ class CandidateSet:
 
     def session_candidate_ids(self) -> List[str]:
         return [s.session_id for s in self.sessions] + list(self.session_sentinels)
+
+    def profile_candidate_ids(self) -> List[str]:
+        """ALL eligible profiles, in the caller's order, sentinel LAST.
+
+        The `no_suitable_profile` sentinel is unconditionally in this set, so the
+        explicit abstain candidate is always on the ballot; it is never optional.
+        """
+        return [p.profile_id for p in self.profiles] + list(self.profile_sentinels)
+
+    def candidate_ids_for(self, surface: str) -> List[str]:
+        """The ONE place a surface maps to its candidate id list (D8).
+
+        Both backends and the payload builder go through here, which is what makes
+        "the adapter cannot widen, reorder, add or drop a candidate" structural: the
+        list returned is derived from exactly one surface's candidates, in the order
+        the caller declared them.  An unknown surface raises ``ValueError`` (the
+        callers translate it into their own structured error).
+        """
+        if surface == "topic":
+            return self.topic_candidate_ids()
+        if surface == "session":
+            return self.session_candidate_ids()
+        if surface == "profile":
+            return self.profile_candidate_ids()
+        raise ValueError("unknown surface %r" % (surface,))
+
+    def profile_index(self) -> Dict[str, ProfileCandidate]:
+        return {p.profile_id: p for p in self.profiles}
 
     def topic_index(self) -> Dict[str, TopicCandidate]:
         return {t.topic_id: t for t in self.topics}
@@ -435,12 +547,39 @@ class CandidateSet:
             "expected exactly %s" % (list(SESSION_SENTINELS),),
         )
 
+        # -- phase-2 additive profile block (D8) ---------------------------
+        # Absent == no profile surface == today's behaviour and today's receipts.
+        profiles_raw = data.get("profiles", [])
+        _need(isinstance(profiles_raw, list), path + ".profiles", "expected a list")
+        profiles = [
+            ProfileCandidate.from_dict(item, "%s.profiles[%d]" % (path, i))
+            for i, item in enumerate(profiles_raw)
+        ]
+        pids = [p.profile_id for p in profiles]
+        _need(len(set(pids)) == len(pids), path + ".profiles", "duplicate profile_id values")
+        p_collisions = sorted(set(pids) & set(PROFILE_SENTINELS))
+        _need(
+            not p_collisions,
+            path + ".profiles",
+            "profile_id collides with the reserved sentinel: %s" % (p_collisions,),
+        )
+        p_sentinels = data.get("profile_sentinels")
+        if p_sentinels is not None:
+            _need(
+                isinstance(p_sentinels, list) and tuple(p_sentinels) == PROFILE_SENTINELS,
+                path + ".profile_sentinels",
+                "expected exactly %s (the abstain sentinel is always a candidate)"
+                % (list(PROFILE_SENTINELS),),
+            )
+
         return cls(
             request_id=request_id,
             topics=tuple(topics),
             sessions=tuple(sessions),
             topic_sentinels=TOPIC_SENTINELS,
             session_sentinels=SESSION_SENTINELS,
+            profiles=tuple(profiles),
+            profile_sentinels=PROFILE_SENTINELS,
         )
 
 
@@ -460,6 +599,9 @@ THRESHOLD_FIELDS = (
 
 TOPIC_SCORE_FIELDS = ("candidate", "raw", "calibrated")
 SESSION_SCORE_FIELDS = ("candidate", "raw", "calibrated", "utility")
+#: the profile surface is a comparative ranking surface like `topic`: raw + calibrated
+#: only (no utility term, no cost/contamination pricing of its own).
+PROFILE_SCORE_FIELDS = ("candidate", "raw", "calibrated")
 TOP_FIELDS = ("candidate", "calibrated")
 SESSION_TOP_FIELDS = ("candidate", "utility")
 
@@ -479,6 +621,11 @@ DECISION_FIELDS = (
     "calibration_model_id",
     "contamination_score",
     "token_cost_estimate",
+    # phase-2 additive block (D8): present ONLY when the profile surface ran
+    "profile_candidate_ids",
+    "profile_scores",
+    "profile_top",
+    "profile_margin",
 )
 
 
@@ -502,6 +649,15 @@ def _session_score(obj: Any, path: str) -> Dict[str, Any]:
     }
 
 
+def _profile_score(obj: Any, path: str) -> Dict[str, Any]:
+    data = _closed(obj, PROFILE_SCORE_FIELDS, path)
+    return {
+        "candidate": _str(data, "candidate", path, ID_TOKEN_RE),
+        "raw": _float(data, "raw", path),
+        "calibrated": _float(data, "calibrated", path),
+    }
+
+
 @dataclass
 class RoutingDecision:
     request_id: str
@@ -518,10 +674,16 @@ class RoutingDecision:
     calibration_model_id: str = "none"
     contamination_score: float = 0.0
     token_cost_estimate: int = 0
+    #: phase-2 additive profile block (D8).  Empty == the profile surface did not run
+    #: (no profile candidates were declared), which is the pre-profile default.
+    profile_candidate_ids: List[str] = field(default_factory=list)
+    profile_scores: List[Dict[str, Any]] = field(default_factory=list)
+    profile_top: Optional[Dict[str, Any]] = None
+    profile_margin: float = 0.0
     schema: str = SCHEMA_DECISION
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "schema": self.schema,
             "request_id": self.request_id,
             "band": self.band,
@@ -538,6 +700,12 @@ class RoutingDecision:
             "contamination_score": self.contamination_score,
             "token_cost_estimate": self.token_cost_estimate,
         }
+        if self.profile_candidate_ids:
+            out["profile_candidate_ids"] = list(self.profile_candidate_ids)
+            out["profile_scores"] = [dict(s) for s in self.profile_scores]
+            out["profile_top"] = dict(self.profile_top) if self.profile_top else None
+            out["profile_margin"] = float(self.profile_margin)
+        return out
 
     @classmethod
     def from_dict(cls, obj: Any) -> "RoutingDecision":
@@ -552,6 +720,19 @@ class RoutingDecision:
         topic_top = data.get("topic_top")
         topic_second = data.get("topic_second")
         session_top = data.get("session_top")
+        profile_ids = data.get("profile_candidate_ids", [])
+        profile_scores_raw = data.get("profile_scores", [])
+        profile_top = data.get("profile_top")
+        _need(
+            isinstance(profile_ids, list), path + ".profile_candidate_ids", "expected a list"
+        )
+        for index, item in enumerate(profile_ids):
+            _need(
+                is_id_token(item),
+                "%s.profile_candidate_ids[%d]" % (path, index),
+                "value %r is outside the closed id/enum/hash domain" % (item,),
+            )
+        _need(isinstance(profile_scores_raw, list), path + ".profile_scores", "expected a list")
         return cls(
             request_id=_str(data, "request_id", path, UUID4_RE),
             band=_enum(data, "band", BANDS, path),
@@ -577,6 +758,17 @@ class RoutingDecision:
             calibration_model_id=_str(data, "calibration_model_id", path, ID_TOKEN_RE),
             contamination_score=_float(data, "contamination_score", path),
             token_cost_estimate=_int(data, "token_cost_estimate", path),
+            profile_candidate_ids=list(profile_ids),
+            profile_scores=[
+                _profile_score(s, "%s.profile_scores[%d]" % (path, i))
+                for i, s in enumerate(profile_scores_raw)
+            ],
+            profile_top=(
+                _closed(profile_top, TOP_FIELDS, path + ".profile_top")
+                if profile_top is not None
+                else None
+            ),
+            profile_margin=_float(data, "profile_margin", path, -1.0, 1.0),
         )
 
 
@@ -613,6 +805,13 @@ RECEIPT_FIELDS = (
     # operator-declared fallback chain fired; absent on the default path, so
     # local-only receipts stay byte-identical to the earlier release.
     "fallback_from",
+    # Optional, profile-lane additive block (D8): present ONLY when the `profile`
+    # surface actually ran (i.e. the caller declared profile candidates).  Absent on
+    # the default path, so local-only receipts stay byte-identical.
+    "profile_candidate_ids",
+    "profile_scores",
+    "profile_top",
+    "profile_margin",
 )
 
 ROUTER_VERSION = "1.0.0"
@@ -678,6 +877,14 @@ def build_receipt(
     }
     if fallback_from is not None:
         receipt["fallback_from"] = fallback_from
+    # D8: the profile block is emitted ONLY when the profile surface actually ran, so a
+    # receipt from the (still default) topic/session-only path keeps exactly the
+    # original field set and byte-identical content.
+    if decision.profile_candidate_ids:
+        receipt["profile_candidate_ids"] = list(decision.profile_candidate_ids)
+        receipt["profile_scores"] = [dict(s) for s in decision.profile_scores]
+        receipt["profile_top"] = dict(decision.profile_top) if decision.profile_top else None
+        receipt["profile_margin"] = float(decision.profile_margin)
     return receipt
 
 
@@ -737,4 +944,30 @@ def validate_receipt(obj: Any) -> Dict[str, Any]:
             path + ".fallback_from",
             "expected a provider id token or null",
         )
+    # phase-2 additive profile block (D8): validated only when present.
+    if "profile_candidate_ids" in data:
+        profile_ids = _receipt_string_list(data, "profile_candidate_ids", path)
+        profile_scores = data.get("profile_scores")
+        _need(isinstance(profile_scores, list), path + ".profile_scores", "expected a list")
+        score_rows: List[Any] = profile_scores if isinstance(profile_scores, list) else []
+        for index, score in enumerate(score_rows):
+            _profile_score(score, "%s.profile_scores[%d]" % (path, index))
+        scored = [row["candidate"] for row in score_rows]
+        missing = [c for c in profile_ids if c not in scored]
+        extra = sorted(c for c in scored if c not in set(profile_ids))
+        _need(
+            not missing and not extra,
+            path + ".profile_scores",
+            "profile scores must cover exactly profile_candidate_ids (missing=%s extra=%s)"
+            % (missing[:8], extra[:8]),
+        )
+        profile_top = data.get("profile_top")
+        _need(
+            profile_top is None or isinstance(profile_top, dict),
+            path + ".profile_top",
+            "expected an object or null",
+        )
+        if profile_top is not None:
+            _closed(profile_top, TOP_FIELDS, path + ".profile_top")
+        _float(data, "profile_margin", path, -1.0, 1.0)
     return data

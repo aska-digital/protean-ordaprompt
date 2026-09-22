@@ -31,6 +31,7 @@ from .schemas import (
     CandidateSet,
     ClassificationRequest,
     PrivacyViolationError,
+    ProfileCandidate,
     SchemaError,
     SessionCandidate,
     TopicCandidate,
@@ -47,6 +48,23 @@ def _build_candidates(args: argparse.Namespace, request: ClassificationRequest) 
         return CandidateSet.from_dict(_load_json(args.candidates))
     topics = [t.strip() for t in (args.topics or "").split(",") if t.strip()]
     sessions = [s.strip() for s in (args.sessions or "").split(",") if s.strip()]
+    profile_ids = [p.strip() for p in (args.profiles or "").split(",") if p.strip()]
+    # D8: the `profile` surface is driven by the candidate set.  Eligibility is the
+    # caller's decision, so the CLI only ever passes through the ids it was given --
+    # no widening, no default profile, no implicit allowlist.  An id outside the
+    # closed slug domain is a schema reject (exit 2), never a silent coercion.
+    profiles = [
+        ProfileCandidate.from_dict(
+            {
+                "profile_id": profile_id,
+                "scope": args.profile_scope,
+                "privacy_class": args.profile_privacy_class,
+                "labels": [],
+            },
+            "cli.profiles[%d]" % index,
+        )
+        for index, profile_id in enumerate(profile_ids)
+    ]
     return CandidateSet(
         request_id=request.request_id,
         topics=tuple(TopicCandidate(topic_id=t) for t in topics),
@@ -54,6 +72,7 @@ def _build_candidates(args: argparse.Namespace, request: ClassificationRequest) 
             SessionCandidate(session_id=s, project_id_hash=request.project_id_hash)
             for s in sessions
         ),
+        profiles=tuple(profiles),
     )
 
 
@@ -143,6 +162,24 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--candidates", help="CandidateSet JSON file")
         child.add_argument("--topics", help="comma-separated topic slugs (when --candidates is absent)")
         child.add_argument("--sessions", help="comma-separated session ids (when --candidates is absent)")
+        child.add_argument(
+            "--profiles",
+            help="comma-separated eligible profile ids for the `profile` surface "
+            "(when --candidates is absent); the no_suitable_profile abstain candidate is "
+            "always added, and the order given here is the order scored",
+        )
+        child.add_argument(
+            "--profile-scope",
+            choices=("global", "project", "session"),
+            default="project",
+            help="scope label carried for every profile given by --profiles (closed enum)",
+        )
+        child.add_argument(
+            "--profile-privacy-class",
+            choices=("public", "internal", "private", "restricted"),
+            default="private",
+            help="privacy class carried for every profile given by --profiles (closed enum)",
+        )
         child.add_argument("--receipts-dir", help="append-only receipt directory")
         child.add_argument("--calibration", help="calibration model JSON (default: none -> nothing automatic)")
         child.add_argument("--config", help="router config JSON: router.backends.openrouter.enabled, legacy_fallback")

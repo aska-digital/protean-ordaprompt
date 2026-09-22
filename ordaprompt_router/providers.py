@@ -30,6 +30,18 @@ D6  Provider raw scores pass through the calibration/threshold/band path unchang
     scores are each a hard error.
 D7  "Jev-style" only: a ``jev`` entry is a plain OpenAI-compatible endpoint row.
     This module bundles no model and makes no claim about a live Jev integration.
+D8  The ``profile`` surface.  It is a first-class comparative surface beside ``topic``
+    and ``session`` and sits behind exactly the same contract: ONE ``batch_score`` call
+    per surface, all candidates at once in the caller's order, reply rows of exactly
+    ``{"candidate","raw"}``, and a reply that does not cover exactly the candidate id
+    set is a hard :class:`ProviderContractError` (never a partial accept, never a
+    silent fallback).  Eligibility is computed UPSTREAM and arrives as the candidate
+    set -- this module never widens, reorders, adds or drops a candidate.  The sentinel
+    ``no_suitable_profile`` is always a candidate, so the explicit abstain outcome is
+    always on the ballot.  Privacy: only ids/labels/enums leave the process; the single
+    choke point :func:`_profile_request_rows` plus
+    :func:`assert_profile_payload_whitelisted` guarantee that nothing beyond
+    ``profile_id``, ``scope``, ``privacy_class`` and ``labels`` is ever serialised.
 
 Stdlib only.  No socket is opened unless an operator supplies a providers file and
 selects a provider row whose kind requires network.
@@ -55,7 +67,15 @@ from .adapter import (
     SyntheticBackend,
     assert_hash_only_payload,
 )
-from .schemas import ID_TOKEN_RE, SLUG_RE, CandidateSet
+from .schemas import (
+    ID_TOKEN_RE,
+    PROFILE_PRIVACY_CLASSES,
+    PROFILE_SCOPES,
+    PROFILE_SENTINEL_ABSTAIN,
+    SLUG_RE,
+    CandidateSet,
+    PrivacyViolationError,
+)
 
 # --------------------------------------------------------------------------
 # Constants / closed domains
@@ -750,9 +770,45 @@ class OpenAICompatibleBackend(ClassificationBackend):
         return headers
 
     def build_batch_payload(
-        self, request_handle: RequestHandle, candidate_ids: Sequence[str], surface: str
+        self,
+        request_handle: RequestHandle,
+        candidate_ids: Sequence[str],
+        surface: str,
+        profile_candidates: Optional[Sequence[Any]] = None,
     ) -> Dict[str, Any]:
-        """Hash/id-only batch payload: no prompt text ever leaves the process."""
+        """Hash/id-only batch payload: no prompt text ever leaves the process.
+
+        THE payload choke point (D8 item 5).  ``candidate_ids`` is exactly the list
+        the caller's candidate set yielded for ``surface`` -- this method never
+        widens, reorders, adds or drops one.  On the ``profile`` surface the
+        whitelisted profile metadata block is appended; it must describe exactly the
+        non-sentinel candidates, in the same order, or the batch is refused before any
+        transport call.
+        """
+        user_message: Dict[str, Any] = {
+            "content": BATCH_CONTENT_TOKEN,
+            "surface": surface,
+            "prompt_hash": request_handle.prompt_hash,
+            "context_hash": request_handle.context_hash or NO_CONTEXT_TOKEN,
+            "project_id_hash": request_handle.project_id_hash,
+            "candidates": [str(c) for c in candidate_ids],
+        }
+        if surface == "profile":
+            candidates_given = [str(c) for c in candidate_ids]
+            eligible_ids = [c for c in candidates_given if c != PROFILE_SENTINEL_ABSTAIN]
+            rows = _profile_request_rows(list(profile_candidates or ()))
+            row_ids = [row["profile_id"] for row in rows]
+            if row_ids != eligible_ids:
+                # belt and braces: metadata must describe exactly the eligible
+                # candidate set, in the caller's order.  A mismatch means something
+                # tried to widen or reorder eligibility on the way to the wire.
+                raise ProviderContractError(
+                    "candidate_set_mismatch",
+                    "profile metadata must cover exactly the eligible candidate set "
+                    "(ids=%s metadata=%s)" % (candidates_given[:8], row_ids[:8]),
+                    provider_id=self.row.id,
+                )
+            user_message[PROFILE_BLOCK_KEY] = rows
         payload = {
             "model": self.row.model,
             "temperature": 0,
@@ -760,17 +816,10 @@ class OpenAICompatibleBackend(ClassificationBackend):
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": BATCH_SYSTEM_TOKEN},
-                {
-                    "role": "user",
-                    "content": BATCH_CONTENT_TOKEN,
-                    "surface": surface,
-                    "prompt_hash": request_handle.prompt_hash,
-                    "context_hash": request_handle.context_hash or NO_CONTEXT_TOKEN,
-                    "project_id_hash": request_handle.project_id_hash,
-                    "candidates": [str(c) for c in candidate_ids],
-                },
+                user_message,
             ],
         }
+        assert_profile_payload_whitelisted(payload)
         assert_hash_only_payload(payload)
         return payload
 
@@ -878,11 +927,10 @@ class OpenAICompatibleBackend(ClassificationBackend):
         candidates: CandidateSet,
         surface: str,
     ) -> List[Dict[str, Any]]:
-        if surface == "topic":
-            candidate_ids = candidates.topic_candidate_ids()
-        elif surface == "session":
-            candidate_ids = candidates.session_candidate_ids()
-        else:
+        try:
+            candidate_ids = candidates.candidate_ids_for(surface)
+        except ValueError:
+            # unknown surface tokens are refused, never coerced onto a known surface
             raise ProviderContractError(
                 "unknown_surface", "unknown surface %r" % (surface,), provider_id=self.row.id
             )
@@ -894,10 +942,21 @@ class OpenAICompatibleBackend(ClassificationBackend):
                 provider_id=self.row.id,
             )
         self.batch_calls[surface] = self.batch_calls.get(surface, 0) + 1
-        payload = self.build_batch_payload(request_handle, candidate_ids, surface)
+        # D8: eligibility is upstream; the eligible profiles are passed through
+        # unchanged (order included) so the request can never score a profile the
+        # caller excluded, or drop one it included.
+        profile_candidates = tuple(candidates.profiles) if surface == "profile" else None
+        payload = self.build_batch_payload(
+            request_handle, candidate_ids, surface, profile_candidates
+        )
         self.last_payload = payload
         document = self._post_json(payload)
-        return validate_batch_reply(document, candidate_ids, provider_id=self.row.id)
+        return validate_batch_reply(
+            document,
+            candidate_ids,
+            provider_id=self.row.id,
+            strict_order=(surface == "profile"),
+        )
 
     def propose_taxonomy(
         self,
@@ -1003,6 +1062,141 @@ SCORE_ROW_FIELDS = ("candidate", "raw")
 SCORE_DOC_FIELDS = ("scores",)
 PROPOSAL_FIELDS = ("slug", "parent_slug", "confidence")
 
+# --------------------------------------------------------------------------
+# Profile payload whitelist -- the single choke point (D8 item 5)
+# --------------------------------------------------------------------------
+
+#: the ONLY profile metadata fields that may ever be serialised into a provider
+#: request.  Eligibility, project hashes, idle days, ordering keys, display names,
+#: free-text descriptions and every other attribute stay in-process.
+PROFILE_REQUEST_FIELDS = ("profile_id", "scope", "privacy_class", "labels")
+PROFILE_BLOCK_KEY = "profile_candidates"
+#: payload keys allowed to mention the word "profile" at all (adversarial backstop:
+#: a smuggled `profile_description` / `profile_note` fails the assertion)
+PROFILE_KEY_ALLOWLIST = (PROFILE_BLOCK_KEY, "profile_id", "no_suitable_profile")
+
+
+class ProfileMetadataViolation(PrivacyViolationError):
+    """Raised when profile metadata outside the whitelist is about to leave (D8)."""
+
+
+def _profile_request_row(profile: Any) -> Dict[str, Any]:
+    """Build the whitelisted request row for ONE eligible profile.
+
+    This is the only place a profile is converted for transport.  It constructs a
+    FRESH dict from the whitelisted fields -- it never copies a caller mapping
+    through -- and re-validates every value against its closed domain, so an unknown
+    field, an out-of-domain enum value or a free-text string raises instead of being
+    sent.
+    """
+    if isinstance(profile, Mapping):
+        unknown = sorted(set(profile.keys()) - set(PROFILE_REQUEST_FIELDS))
+        if unknown:
+            raise ProfileMetadataViolation(
+                "profile row carries non-whitelisted field(s): %s (whitelist=%s)"
+                % (unknown, list(PROFILE_REQUEST_FIELDS))
+            )
+        row = {key: profile.get(key) for key in PROFILE_REQUEST_FIELDS}
+    else:
+        raw = getattr(profile, "to_dict", None)
+        if raw is None or not callable(raw):
+            raise ProfileMetadataViolation(
+                "profile candidate must be a ProfileCandidate or a whitelisted mapping"
+            )
+        built_raw = raw()
+        if not isinstance(built_raw, Mapping):
+            raise ProfileMetadataViolation(
+                "profile candidate must expose a whitelisted mapping, got %s"
+                % type(built_raw).__name__
+            )
+        built = cast(Mapping[str, Any], built_raw)
+        unknown = sorted(set(built.keys()) - set(PROFILE_REQUEST_FIELDS))
+        if unknown:
+            raise ProfileMetadataViolation(
+                "profile row carries non-whitelisted field(s): %s" % (unknown,)
+            )
+        row = {key: built.get(key) for key in PROFILE_REQUEST_FIELDS}
+
+    profile_id = row.get("profile_id")
+    if not isinstance(profile_id, str) or not SLUG_RE.match(profile_id):
+        raise ProfileMetadataViolation("profile_id is outside the closed id domain")
+    scope = row.get("scope")
+    if scope not in PROFILE_SCOPES:
+        raise ProfileMetadataViolation(
+            "scope %r is outside the closed domain %s" % (scope, list(PROFILE_SCOPES))
+        )
+    privacy_class = row.get("privacy_class")
+    if privacy_class not in PROFILE_PRIVACY_CLASSES:
+        raise ProfileMetadataViolation(
+            "privacy_class %r is outside the closed domain %s"
+            % (privacy_class, list(PROFILE_PRIVACY_CLASSES))
+        )
+    labels = row.get("labels") or ()
+    if isinstance(labels, str) or not isinstance(labels, (list, tuple)):
+        raise ProfileMetadataViolation("labels must be a sequence of label slugs")
+    out_labels: List[str] = []
+    for label in labels:
+        if not isinstance(label, str) or not SLUG_RE.match(label):
+            raise ProfileMetadataViolation(
+                "label %r is outside the closed id domain (labels are ids, never text)" % (label,)
+            )
+        out_labels.append(label)
+    return {
+        "profile_id": profile_id,
+        "scope": str(scope),
+        "privacy_class": str(privacy_class),
+        "labels": out_labels,
+    }
+
+
+def _profile_request_rows(profiles: Sequence[Any]) -> List[Dict[str, Any]]:
+    """THE choke point: the only function that turns candidates into profile rows."""
+    return [_profile_request_row(profile) for profile in profiles]
+
+
+def assert_profile_payload_whitelisted(payload: Any, path: str = "payload") -> None:
+    """Adversarial backstop for the D8 privacy invariant.
+
+    Called on every assembled batch payload: outside ``profile_candidates``, no key
+    may even *mention* a profile field name, and inside it every row must carry
+    exactly the whitelist.  Anything else -- a description, a display name, a
+    permission list, a stray eligibility hint -- fails loudly instead of shipping.
+    """
+    if isinstance(payload, Mapping):
+        for key, value in payload.items():
+            key_text = str(key)
+            if "profile" in key_text.lower() and key_text not in PROFILE_KEY_ALLOWLIST:
+                raise ProfileMetadataViolation(
+                    "%s: key %r is not on the profile payload allowlist %s"
+                    % (path, key_text, list(PROFILE_KEY_ALLOWLIST))
+                )
+            if key_text == PROFILE_BLOCK_KEY:
+                if not isinstance(value, (list, tuple)):
+                    raise ProfileMetadataViolation("%s.%s must be a list" % (path, key_text))
+                for index, row in enumerate(value):
+                    if not isinstance(row, Mapping):
+                        raise ProfileMetadataViolation(
+                            "%s.%s[%d] must be an object" % (path, key_text, index)
+                        )
+                    unknown = sorted(set(row.keys()) - set(PROFILE_REQUEST_FIELDS))
+                    if unknown:
+                        raise ProfileMetadataViolation(
+                            "%s.%s[%d] carries non-whitelisted field(s): %s"
+                            % (path, key_text, index, unknown)
+                        )
+                    missing = [f for f in PROFILE_REQUEST_FIELDS if f not in row]
+                    if missing:
+                        raise ProfileMetadataViolation(
+                            "%s.%s[%d] is missing whitelisted field(s): %s"
+                            % (path, key_text, index, missing)
+                        )
+                continue
+            assert_profile_payload_whitelisted(value, "%s.%s" % (path, key_text))
+        return
+    if isinstance(payload, (list, tuple)):
+        for index, item in enumerate(payload):
+            assert_profile_payload_whitelisted(item, "%s[%d]" % (path, index))
+
 
 def _reply_content(document: Any, provider_id: Optional[str]) -> Any:
     """Extract and parse the strict JSON object carried in the assistant message."""
@@ -1044,7 +1238,10 @@ def _reply_content(document: Any, provider_id: Optional[str]) -> Any:
 
 
 def validate_batch_reply(
-    document: Any, expected_ids: Sequence[str], provider_id: Optional[str] = None
+    document: Any,
+    expected_ids: Sequence[str],
+    provider_id: Optional[str] = None,
+    strict_order: bool = False,
 ) -> List[Dict[str, Any]]:
     """The exact-response validator of D3/D6.
 
@@ -1124,6 +1321,13 @@ def validate_batch_reply(
             "candidate_set_mismatch",
             "reply must cover exactly the candidate id set (missing=%s extra=%s)"
             % (missing[:8], extra[:8]),
+            provider_id=provider_id,
+        )
+    actual_order = [str(row.get("candidate")) for row in rows]
+    if strict_order and actual_order != expected:
+        raise ProviderContractError(
+            "candidate_order_mismatch",
+            "reply candidate order must match the requested candidate order",
             provider_id=provider_id,
         )
     return [{"candidate": candidate, "raw": seen[candidate]} for candidate in expected]

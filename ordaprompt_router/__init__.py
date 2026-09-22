@@ -27,6 +27,7 @@ from .adapter import (
 )
 from .providers import (
     OpenAICompatibleBackend,
+    ProfileMetadataViolation,
     ProviderChainBackend,
     ProviderConfigError,
     ProviderContractError,
@@ -37,6 +38,7 @@ from .providers import (
     Transport,
     TransportRequest,
     TransportResponse,
+    assert_profile_payload_whitelisted,
     stdlib_transport,
 )
 from .receipts import ReceiptStore, assert_no_free_text
@@ -49,9 +51,12 @@ from .router import (
     route,
 )
 from .schemas import (
+    PROFILE_SENTINELS,
+    SURFACES,
     CandidateSet,
     ClassificationRequest,
     PrivacyViolationError,
+    ProfileCandidate,
     RoutingDecision,
     SchemaError,
 )
@@ -67,6 +72,10 @@ __all__ = [
     "OpenAICompatibleBackend",
     "OpenRouterBackend",
     "PrivacyViolationError",
+    "ProfileCandidate",
+    "ProfileMetadataViolation",
+    "PROFILE_SENTINELS",
+    "SURFACES",
     "ProviderChainBackend",
     "ProviderConfigError",
     "ProviderContractError",
@@ -86,6 +95,7 @@ __all__ = [
     "TransportRequest",
     "TransportResponse",
     "assert_no_free_text",
+    "assert_profile_payload_whitelisted",
     "canonicalize_redacted",
     "route",
     "sha256_hex",

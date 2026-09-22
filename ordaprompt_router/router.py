@@ -34,6 +34,7 @@ from .adapter import (
 )
 from .schemas import (
     CONTAMINATION_WEIGHTS,
+    PROFILE_SENTINEL_ABSTAIN,
     ROUTER_VERSION,
     SCHEMA_RECEIPT,
     CandidateSet,
@@ -48,6 +49,9 @@ BAND_CONSERVATIVE = ("automatic", "fallback_escalate", "abstain_or_new_session")
 TOPIC_SENTINEL_NOVEL = "novel"
 TOPIC_SENTINEL_AMBIGUOUS = "ambiguous"
 SESSION_SENTINEL_NEW = "new_session"
+#: the profile surface's explicit abstain candidate (see schemas.PROFILE_SENTINELS),
+#: re-exported here under the name the router uses.
+PROFILE_SENTINEL_NO_SUITABLE = PROFILE_SENTINEL_ABSTAIN
 
 
 # --------------------------------------------------------------------------
@@ -126,6 +130,14 @@ class CalibrationModel:
     b_topic: float = 0.0
     a_session: float = 1.0
     b_session: float = 0.0
+    #: phase-2 additive (D8): the profile surface's Platt coefficients.  They ship at
+    #: IDENTITY (1.0 / 0.0) because no profile calibration has been fit on real
+    #: feedback data.  With identity coefficients `calibrate("profile", raw) == raw`,
+    #: i.e. a provider's profile score stays a RANKING SIGNAL: it can order candidates
+    #: and lower the band, but it can never manufacture a calibrated probability that
+    #: unlocks `automatic` while `calibration_model_id` is "none".
+    a_profile: float = 1.0
+    b_profile: float = 0.0
     unlock_evidence: Optional[Dict[str, Any]] = None
 
     def calibrate(self, surface: str, raw: float) -> float:
@@ -135,6 +147,8 @@ class CalibrationModel:
             a, b = self.a_topic, self.b_topic
         elif surface == "session":
             a, b = self.a_session, self.b_session
+        elif surface == "profile":
+            a, b = self.a_profile, self.b_profile
         else:
             raise ValueError("unknown surface %r" % (surface,))
         return min(1.0, max(0.0, _sigmoid(a * _logit(raw) + b)))
@@ -147,6 +161,8 @@ class CalibrationModel:
             "b_topic": self.b_topic,
             "a_session": self.a_session,
             "b_session": self.b_session,
+            "a_profile": self.a_profile,
+            "b_profile": self.b_profile,
             "unlock_evidence": self.unlock_evidence,
         }
 
@@ -159,6 +175,8 @@ class CalibrationModel:
             b_topic=float(obj.get("b_topic", 0.0)),
             a_session=float(obj.get("a_session", 1.0)),
             b_session=float(obj.get("b_session", 0.0)),
+            a_profile=float(obj.get("a_profile", 1.0)),
+            b_profile=float(obj.get("b_profile", 0.0)),
             unlock_evidence=obj.get("unlock_evidence"),
         )
 
@@ -337,6 +355,12 @@ class RouteResult:
     transitions: List[str]
     topic_band: str
     session_band: Optional[str]
+    #: phase-2 additive (D8): None when the profile surface did not run (no profile
+    #: candidates were declared), which is the pre-profile default and keeps this
+    #: object's earlier shape meaningful.
+    profile_band: Optional[str] = None
+    profile_escalation_code: Optional[str] = None
+    profile_scores: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def contamination_risk(flags: Sequence[str]) -> float:
@@ -394,6 +418,13 @@ def route(
     session_code: Optional[str] = None
     decision_value = "new_session"
     band_value = "abstain_or_new_session"
+    # -- profile surface (D8): declared only when the caller sent profile candidates
+    profile_scores: List[Dict[str, Any]] = []
+    profile_candidate_ids: List[str] = []
+    profile_top: Optional[Dict[str, Any]] = None
+    profile_margin = 0.0
+    profile_band: Optional[str] = None
+    profile_code: Optional[str] = None
 
     # -- explicit directive short-circuit (section 1.1) ---------------------
     if request.explicit_directive:
@@ -481,15 +512,62 @@ def route(
             )
             session_band = "abstain_or_new_session"
 
-    # -- effective band = the more conservative of the two ------------------
-    if session_band is None:
-        band_value, code = topic_band, topic_code
-    elif BAND_ORDER[session_band] > BAND_ORDER[topic_band]:
-        band_value, code = session_band, session_code
-    elif BAND_ORDER[session_band] < BAND_ORDER[topic_band]:
-        band_value, code = topic_band, topic_code
-    else:
-        band_value, code = topic_band, topic_code or session_code
+    # -- profile surface (D8): ONE batch call over ALL eligible profiles plus the
+    #     `no_suitable_profile` sentinel.  Engaged ONLY when the caller declared
+    #     profile candidates: eligibility is computed upstream, and with no eligible
+    #     profile there is nothing to compare, so the pre-profile path is untouched.
+    if candidates.profiles:
+        profile_candidate_ids = candidates.profile_candidate_ids()
+        try:
+            t0 = time.perf_counter_ns()
+            raw_profile = config.backend.batch_score(handle, candidates, "profile")
+            backend_latency_ns += time.perf_counter_ns() - t0
+            calibrated_profile = {
+                row["candidate"]: calibration.calibrate("profile", row["raw"])
+                for row in raw_profile
+            }
+            profile_scores = [
+                {
+                    "candidate": row["candidate"],
+                    "raw": float(row["raw"]),
+                    "calibrated": calibrated_profile[row["candidate"]],
+                }
+                for row in raw_profile
+            ]
+            ranked_profile = _rank(calibrated_profile)
+            profile_top = {
+                "candidate": ranked_profile[0][0],
+                "calibrated": ranked_profile[0][1],
+            }
+            if len(ranked_profile) > 1:
+                profile_margin = ranked_profile[0][1] - ranked_profile[1][1]
+            profile_band, profile_code = _profile_band(
+                ranked_profile, thresholds, calibration.active
+            )
+        except (BackendError, DisabledByPolicy) as exc:
+            # fail closed (D3): no scores => no profile block in the receipt, and the
+            # band can only get MORE conservative below.
+            profile_code = (
+                "backend_disabled_by_policy" if isinstance(exc, DisabledByPolicy) else "backend_error"
+            )
+            profile_band = "abstain_or_new_session"
+            profile_scores = []
+            profile_candidate_ids = []
+
+    # -- effective band = the most conservative of the surfaces that ran -----
+    #     (identical tie-breaking to the topic/session pair: topic first, then the
+    #     other surface's code)
+    band_value, code = topic_band, topic_code
+    if session_band is not None:
+        if BAND_ORDER[session_band] > BAND_ORDER[topic_band]:
+            band_value, code = session_band, session_code
+        elif BAND_ORDER[session_band] == BAND_ORDER[topic_band]:
+            code = code or session_code
+    if profile_band is not None:
+        if BAND_ORDER[profile_band] > BAND_ORDER[band_value]:
+            band_value, code = profile_band, profile_code
+        elif BAND_ORDER[profile_band] == BAND_ORDER[band_value]:
+            code = code or profile_code
 
     # -- decision ----------------------------------------------------------
     if band_value == "automatic":
@@ -534,6 +612,10 @@ def route(
         request, band_value, decision_value, topic_scores, session_scores, topic_top,
         topic_second, topic_margin, session_top, session_margin, thresholds, calibration,
         contamination_score, token_cost_estimate,
+        profile_scores=profile_scores,
+        profile_candidate_ids=profile_candidate_ids,
+        profile_top=profile_top,
+        profile_margin=profile_margin,
     )
     latency_ms = (time.perf_counter() - started) * 1000.0
     receipt = build_receipt(
@@ -560,6 +642,9 @@ def route(
         transitions=transitions,
         topic_band=topic_band,
         session_band=session_band,
+        profile_band=profile_band,
+        profile_escalation_code=profile_code,
+        profile_scores=profile_scores,
     )
 
 
@@ -600,6 +685,10 @@ def _decision(
     calibration: CalibrationModel,
     contamination_score: float,
     token_cost_estimate: int,
+    profile_scores: Optional[List[Dict[str, Any]]] = None,
+    profile_candidate_ids: Optional[List[str]] = None,
+    profile_top: Optional[Dict[str, Any]] = None,
+    profile_margin: float = 0.0,
 ) -> RoutingDecision:
     return RoutingDecision(
         request_id=request.request_id,
@@ -616,6 +705,10 @@ def _decision(
         calibration_model_id=calibration.model_id,
         contamination_score=contamination_score,
         token_cost_estimate=token_cost_estimate,
+        profile_candidate_ids=list(profile_candidate_ids or []),
+        profile_scores=list(profile_scores or []),
+        profile_top=profile_top,
+        profile_margin=float(profile_margin),
     )
 
 
@@ -649,6 +742,42 @@ def _topic_band(
             return "fallback_escalate", "novel_below_threshold"
         return "fallback_escalate", "below_margin"
 
+    if top_cal < thresholds.tau_low:
+        return "abstain_or_new_session", "below_min_score"
+    if top_cal >= thresholds.tau_topic and margin >= thresholds.mu_topic:
+        return "automatic", None
+    if top_cal >= thresholds.tau_topic:
+        return "fallback_escalate", "below_margin"
+    return "fallback_escalate", "below_min_score"
+
+
+def _profile_band(
+    ranked: List[Tuple[str, float]],
+    thresholds: Thresholds,
+    calibration_active: bool,
+) -> Tuple[str, Optional[str]]:
+    """Profile-surface band (D8).
+
+    Reuses the EXISTING generic gates -- ``tau_low`` for the score floor and
+    ``tau_topic`` / ``mu_topic`` for the comparative winner margin -- so the profile
+    surface introduces no threshold of its own and cannot weaken the band.  Two
+    invariants are stricter than the topic path on purpose:
+
+    * the explicit ``no_suitable_profile`` candidate winning ALWAYS yields the abstain
+      band, regardless of its score and regardless of calibration state: an explicit
+      abstain is not something a threshold may overrule;
+    * with no validated calibration (``CalibrationModel.active`` false, i.e.
+      ``calibration_model_id == "none"``) the automatic band is unreachable.
+    """
+    if not ranked:
+        return "abstain_or_new_session", "profile_abstain_argmax"
+    top_candidate, top_cal = ranked[0]
+    margin = top_cal - ranked[1][1] if len(ranked) > 1 else 1.0
+    if top_candidate == PROFILE_SENTINEL_NO_SUITABLE:
+        return "abstain_or_new_session", "profile_abstain_argmax"
+    if not calibration_active:
+        band = "abstain_or_new_session" if top_cal < thresholds.tau_low else "fallback_escalate"
+        return band, "calibration_missing"
     if top_cal < thresholds.tau_low:
         return "abstain_or_new_session", "below_min_score"
     if top_cal >= thresholds.tau_topic and margin >= thresholds.mu_topic:

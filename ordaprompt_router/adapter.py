@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .schemas import (
     SLUG_RE,
+    SURFACES,
     CandidateSet,
     PrivacyViolationError,
 )
@@ -108,8 +109,11 @@ class ClassificationBackend(ABC):
     name: str = "abstract"
 
     def __init__(self) -> None:
-        #: per-surface count of batch_score calls -- proves the ONE-call rule
-        self.batch_calls: Dict[str, int] = {"topic": 0, "session": 0}
+        #: per-surface count of batch_score calls -- proves the ONE-call rule.
+        #: Seeded for every member of the closed surface domain, `profile` included
+        #: (D8): the counter is the audit hook, so it must exist before the first
+        #: call rather than appearing only once a surface is used.
+        self.batch_calls: Dict[str, int] = {surface: 0 for surface in SURFACES}
 
     @abstractmethod
     def batch_score(
@@ -210,11 +214,10 @@ class SyntheticBackend(ClassificationBackend):
         candidates: CandidateSet,
         surface: str,
     ) -> List[Dict[str, Any]]:
-        if surface == "topic":
-            ids = candidates.topic_candidate_ids()
-        elif surface == "session":
-            ids = candidates.session_candidate_ids()
-        else:
+        try:
+            ids = candidates.candidate_ids_for(surface)
+        except ValueError:
+            # unknown surface tokens are refused, never coerced onto a known surface
             raise BackendError("unknown surface %r" % (surface,))
         self.batch_calls[surface] = self.batch_calls.get(surface, 0) + 1
         return [

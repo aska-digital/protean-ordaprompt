@@ -12,6 +12,8 @@ Jev/OpenJEV-like backend can be connected explicitly through the adapter contrac
 is optional and reserved for proposing provisional new labels after a high-confidence novelty
 signal. It is disabled by default.
 
+The Simple-Jev `/v1/classifier` binding is designed but NOT IMPLEMENTED in this release and is a documented follow-up; the shipped network adapter speaks the generic OpenAI-compatible `/chat/completions` shape. This release uses Jev-style architecture only and does not claim that a Jev/OpenJEV model ships with, or is called by, this release.
+
 Hermes Agent plugin. Installable via the curated plugin catalog entry
 `plugin-catalog/protean-ordaprompt.yaml` (in the hermes-agent repository) or directly:
 
