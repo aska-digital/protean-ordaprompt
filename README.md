@@ -12,7 +12,9 @@ Jev/OpenJEV-like backend can be connected explicitly through the adapter contrac
 is optional and reserved for proposing provisional new labels after a high-confidence novelty
 signal. It is disabled by default.
 
-The Simple-Jev `/v1/classifier` binding is designed but NOT IMPLEMENTED in this release and is a documented follow-up; the shipped network adapter speaks the generic OpenAI-compatible `/chat/completions` shape. This release uses Jev-style architecture only and does not claim that a Jev/OpenJEV model ships with, or is called by, this release.
+The Simple-Jev `/v1/classifier` binding and the TypeSafe `/v1/systemone` binding are designed but NOT IMPLEMENTED in this release and are documented follow-ups; the shipped network adapter speaks the generic OpenAI-compatible `/chat/completions` shape. The Laya row is designed, not shipped: Laya is not bundled, connected or tested here, and there is no hosted Laya endpoint, SLA or retention to configure. The same goes for NanoJev (`/api/evaluate`) and the Vercel AI Gateway Jev route: designed, never selectable. This release uses Jev-style architecture only and does not claim that a Jev/OpenJEV model ships with, or is called by, this release, and no live Jev, Simple-Jev, NanoJev or Laya integration was tested.
+
+**Jev-style architecture vs a Jev model.** This plugin is a *routing/comparison layer*: it makes one comparative decision call per surface and applies score, margin and calibration gates. It bundles no model, downloads no weights, and starts no server. "Jev-style" describes the comparative-decision architecture; it is never a claim that a Jev/OpenJEV model is bundled, bundled-then-called, or live-tested. Any real Jev/OpenJEV model must be supplied by the operator as an endpoint row (see below), and even then the wire binding is the generic `/chat/completions` shape, not the native `/v1/classifier` contract.
 
 Hermes Agent plugin. Installable via the curated plugin catalog entry
 `plugin-catalog/protean-ordaprompt.yaml` (in the hermes-agent repository) or directly:
@@ -103,11 +105,33 @@ byte-identical to release 1.0.0. To connect an external OpenAI-compatible classi
       ]
     }
 
-Row fields: `id`, `kind` (`local` | `openai_compatible`), `base_url`, `model`,
-`api_key_env`, `allow_private_network`, `timeout_s`, `max_retries`, `max_tokens`,
-`batch_max_candidates`, `supports_taxonomy_proposal`. Optional top-level fields:
-`default_provider`, `allow_fallback`.
+Row fields (closed schema — any other key is a hard `unknown_field` error): `id`, `kind`,
+`base_url`, `model`, `api_key_env`, `transform`, `endpoint_mode`, `data_class`, `surfaces`,
+`allow_private_network`, `timeout_s`, `max_retries`, `max_tokens`, `batch_max_candidates`,
+`supports_taxonomy_proposal`. Optional top-level fields: `default_provider`, `allow_fallback`.
 
+- **Provider families (closed enum).** `kind` is one of exactly five families: `local`
+  (deterministic in-process scorer — **implemented**), `openai_compatible`
+  (`POST {base_url}/chat/completions`, coerced JSON decision reply — **implemented**),
+  `jev_decision` (the native decision API behind TypeSafe `/v1/systemone` and Simple-Jev
+  `/v1/classifier`, transform `sj-choice-batch-v1`), `nanojev_batch` (`/api/evaluate`), and
+  `laya_local` (local process only — no HTTP surface and no hosted endpoint — transform
+  `laya-choice-v1`, `endpoint_mode` `in_process` | `loopback_sidecar`). The last three are
+  **designed but NOT IMPLEMENTED**: a row that declares one is refused at load with the
+  machine code `kind_unimplemented`, so it can never be silently downgraded to the local
+  scorer, silently skipped, or quietly scored by another family. An unknown family token is
+  `kind_unknown`. Adding a family is a contract revision, not a config edit.
+- **Data class and surfaces.** A row may declare `data_class` (`public` | `internal` |
+  `private`, default `public`; `internal` is the self-hosted declaration) and `surfaces`
+  (subset of `topic`/`session`/`profile`, default all three). A request is only ever offered
+  to a row whose data class covers it and which declares the surface; both refusals are hard
+  errors (`data_class_refused`, `surface_unavailable`) raised before any socket, never a
+  substitution. `private` is reserved for in-process rows — a network row may be `internal`
+  at most. Declare the request's own class with `--data-class` (default `public`).
+- **Per-family batch cap.** `batch_max_candidates` must be at or below the family's verified
+  cap (256 for `local`/`openai_compatible`, 50 for `jev_decision`, 255 for `nanojev_batch`,
+  20 for `laya_local`). A larger value is refused at load; an oversized batch is never split,
+  chunked or truncated.
 - **Credential names only.** The file carries the environment variable NAME
   (`api_key_env`); the value is read from the environment at call time. No key value,
   prefix, length or request header is ever written to a config file, receipt, log, error
@@ -151,6 +175,12 @@ to install. The catalog entry declares `platforms: []` (all platforms).
 | Receipt fails privacy/schema validation | exit code 3, receipt rejected, nothing written |
 | Any unexpected backend error | `BackendError`; the decision is `abstain`, not a guess |
 | Providers file unusable (unparsable, unknown/duplicate id, refused host, unset env key) | exit code 2, structured code on stderr, nothing routed or written, no socket opened |
+| Row declares a designed-but-unimplemented family (`jev_decision`, `nanojev_batch`, `laya_local`) | exit code 2, `kind_unimplemented`, nothing routed or written, no socket opened |
+| Row's `batch_max_candidates` above its family cap | exit code 2, `field_invalid`, nothing routed or written |
+| Request `--data-class` is tighter than the row's declared class | exit code 2, `data_class_refused`, nothing routed or written, no socket opened |
+| Selected row does not declare the requested surface | exit code 2, `surface_unavailable`, nothing routed, no socket opened |
+| Calibration inconsistent (`model_id: "none"` with `active: true`) | exit code 2, `calibration_state_invalid`, nothing routed or written |
+| Active calibration fitted for a different provider key | exit code 2, `calibration_key_mismatch`, nothing routed or written |
 | Provider reply violates the batch contract | hard error, router abstains, no retry, no silent fallback |
 | Declared fallback chain fires | recorded as `fallback_from` in the receipt (scores are never silently substituted) |
 
@@ -166,6 +196,23 @@ ships `calibration_model_id="none"`, active=false, and the harness prints
 `calibration unlocked=False production_model=none`. Until real-data calibration passes,
 routing outcomes are `confirm`, `abstain`, or `abstain_or_new_session` — never
 `automatic`.
+
+- **Consistency gate (L23).** A calibration document is valid only as the CONSISTENT pair
+  `calibration_model_id == "none"` ⟺ `active == false`. Any other combination — including
+  the exact unfitted-but-active pair — is rejected at load with `calibration_state_invalid`
+  before a single call is made. There is no boolean anywhere that unlocks `automatic` by
+  itself.
+- **Fitted-key binding.** `active: true` additionally requires the key
+  `(kind, model, transform)` it was fitted on, and that key must match the provider actually
+  running; otherwise the run stops with `calibration_key_mismatch`. A calibration fitted for
+  a hosted classifier therefore never silently governs a local-only run. Provider choice can
+  never weaken a gate.
+- **NOT IMPLEMENTED at this head:** verifying the ECE measurement itself and the
+  threshold-floor rule from a calibration document (there is no feedback store to measure
+  against yet), and the separate `profiles.json` eligibility-declaration file. Both are
+  designed follow-ups. Profile routing *is* reachable today as a compared surface through the
+  caller's candidate set (all eligible profiles plus the `no_suitable_profile` abstain
+  option, one batch, same gates).
 
 ## Evaluation
 

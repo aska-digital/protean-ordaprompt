@@ -1044,17 +1044,27 @@ class TestProviderRowSchemaUnchanged(unittest.TestCase):
                 ProviderRegistry.from_dict(providers_config(rows=[row]))
             self.assertEqual(ctx.exception.code, "unknown_field")
 
-    def test_row_field_set_is_unchanged_by_the_profile_surface(self):
+    def test_row_field_set_is_the_locked_family_schema(self):
+        """The row field set is the LOCKED section-8.1 list -- and nothing profile-ish.
+
+        The profile surface may not add a row field (eligibility is a candidate property,
+        enforced upstream), but the provider-family contract DOES add the four family
+        selectors below (`transform`, `endpoint_mode`, `data_class`, `surfaces`).  The list
+        is closed: a token outside it stays a hard `unknown_field` error.
+        """
         from ordaprompt_router.providers import ROW_FIELDS
 
         self.assertEqual(
             tuple(ROW_FIELDS),
             (
-                "id", "kind", "base_url", "model", "api_key_env", "allow_private_network",
+                "id", "kind", "base_url", "model", "api_key_env", "transform",
+                "endpoint_mode", "data_class", "surfaces", "allow_private_network",
                 "timeout_s", "max_retries", "max_tokens", "batch_max_candidates",
                 "supports_taxonomy_proposal",
             ),
         )
+        self.assertNotIn("profiles", ROW_FIELDS)
+        self.assertNotIn("profile_candidates", ROW_FIELDS)
 
 
 if __name__ == "__main__":

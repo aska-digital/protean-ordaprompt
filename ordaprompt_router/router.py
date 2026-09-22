@@ -32,6 +32,7 @@ from .adapter import (
     RequestHandle,
     SyntheticBackend,
 )
+from .providers import ProviderConfigError
 from .schemas import (
     CONTAMINATION_WEIGHTS,
     PROFILE_SENTINEL_ABSTAIN,
@@ -122,6 +123,15 @@ class CalibrationModel:
     the HOLDOUT split (ECE <= 0.05, Brier <= 0.10, would-be-automatic precision
     >= 0.98 with >= 50 holdout samples in band).  With ``active=False`` the
     calibrator returns raw scores (identity) and nothing can be automatic.
+
+    LOCKED consistency gate (leo-adapter-architecture.md section 6.4 / L23): a
+    calibration state is valid only as the CONSISTENT pair
+    ``model_id == "none"`` <-> ``active == False``.  Any other combination -- including
+    the exact counterexample ``CalibrationModel(model_id="none", active=True)`` -- is
+    rejected at LOAD time with ``calibration_state_invalid``.  There is no bare boolean
+    anywhere that alone unlocks the ``automatic`` band: ``active`` additionally needs a
+    fitted key that matches the running ``(kind, model, transform)`` and is checked by
+    ``check_provider_key`` against the selected provider row.
     """
 
     model_id: str = "none"
@@ -138,7 +148,74 @@ class CalibrationModel:
     #: unlocks `automatic` while `calibration_model_id` is "none".
     a_profile: float = 1.0
     b_profile: float = 0.0
+    #: The FITTED KEY (section 6.3): a fitted parameter set is valid only for the
+    #: ``(kind, model, transform)`` triple it was fitted on.  All three are None on an
+    #: inactive model, because there is nothing fitted to bind.
+    kind: Optional[str] = None
+    model: Optional[str] = None
+    transform: Optional[str] = None
     unlock_evidence: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.model_id == "none" and self.active:
+            raise ProviderConfigError(
+                "calibration_state_invalid",
+                "calibration_model_id 'none' is mutually exclusive with active=true "
+                "(L23: this exact pair is the unfitted calibration that must never unlock "
+                "the automatic band)",
+            )
+        if self.model_id != "none" and not self.active:
+            raise ProviderConfigError(
+                "calibration_state_invalid",
+                "calibration_model_id %r requires active=true (a fitted model that is not "
+                "active is an ambiguous state, not a silent downgrade)" % (self.model_id,),
+            )
+
+    def fitted_key(self) -> Dict[str, Any]:
+        """The ``(kind, model, transform)`` triple this parameter set was fitted on."""
+        return {"kind": self.kind, "model": self.model, "transform": self.transform}
+
+    def check_provider_key(self, row: Any) -> None:
+        """Refuse an ACTIVE calibration that was not fitted for ``row`` (section 6.3/L16).
+
+        ``row`` is a ``ProviderRow`` (or the plain ``{"kind","model","transform"}`` mapping of
+        a built-in backend, see ``providers.local_backend_key``).  A mismatch never silently
+        downgrades the band: it is a ``calibration_key_mismatch`` hard error, so the run stops
+        instead of routing on parameters fitted elsewhere.
+        """
+        if not self.active:
+            return
+        actual = self._key_of(row)
+        if not self.kind or not self.model:
+            raise ProviderConfigError(
+                "calibration_key_mismatch",
+                "an active calibration must declare the (kind, model[, transform]) key it was "
+                "fitted on; refit against real feedback for that exact triple",
+            )
+        if (self.kind, self.model, self.transform) != (
+            actual["kind"],
+            actual["model"],
+            actual["transform"],
+        ):
+            raise ProviderConfigError(
+                "calibration_key_mismatch",
+                "calibration was fitted for %s but the selected provider is %s"
+                % (self.fitted_key(), actual),
+            )
+
+    @staticmethod
+    def _key_of(row: Any) -> Dict[str, Any]:
+        if isinstance(row, Mapping):
+            return {
+                "kind": row.get("kind"),
+                "model": row.get("model"),
+                "transform": row.get("transform"),
+            }
+        return {
+            "kind": getattr(row, "kind", None),
+            "model": getattr(row, "model", None),
+            "transform": getattr(row, "transform", None),
+        }
 
     def calibrate(self, surface: str, raw: float) -> float:
         if not self.active:
@@ -163,11 +240,15 @@ class CalibrationModel:
             "b_session": self.b_session,
             "a_profile": self.a_profile,
             "b_profile": self.b_profile,
+            "kind": self.kind,
+            "model": self.model,
+            "transform": self.transform,
             "unlock_evidence": self.unlock_evidence,
         }
 
     @classmethod
     def from_dict(cls, obj: Mapping[str, Any]) -> "CalibrationModel":
+        """Load path: the L23 consistency gate applies here, before any call is made."""
         return cls(
             model_id=str(obj.get("model_id", "none")),
             active=bool(obj.get("active", False)),
@@ -177,6 +258,9 @@ class CalibrationModel:
             b_session=float(obj.get("b_session", 0.0)),
             a_profile=float(obj.get("a_profile", 1.0)),
             b_profile=float(obj.get("b_profile", 0.0)),
+            kind=obj.get("kind"),
+            model=obj.get("model"),
+            transform=obj.get("transform"),
             unlock_evidence=obj.get("unlock_evidence"),
         )
 

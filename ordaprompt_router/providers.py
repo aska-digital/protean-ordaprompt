@@ -73,6 +73,7 @@ from .schemas import (
     PROFILE_SCOPES,
     PROFILE_SENTINEL_ABSTAIN,
     SLUG_RE,
+    SURFACES,
     CandidateSet,
     PrivacyViolationError,
 )
@@ -82,7 +83,55 @@ from .schemas import (
 # --------------------------------------------------------------------------
 
 PROVIDERS_SCHEMA_VERSION = 1
-PROVIDER_KINDS = ("local", "openai_compatible")
+
+#: The CLOSED provider-family taxonomy (leo-adapter-architecture.md section 2.1).  `kind`
+#: is a closed enum: a family is added by contract revision, never by configuration, and an
+#: unknown token is a hard `kind_unknown` error.
+PROVIDER_KINDS = (
+    "local",
+    "openai_compatible",
+    "jev_decision",
+    "nanojev_batch",
+    "laya_local",
+)
+
+#: Families with a real adapter at THIS head.  The remaining three are SHAPED (their wire
+#: mapping is designed and documented) but UNIMPLEMENTED: a row declaring one fails closed at
+#: LOAD time with `kind_unimplemented` -- never a silent downgrade to the local scorer, never
+#: a silent omission.
+IMPLEMENTED_KINDS = ("local", "openai_compatible")
+DESIGNED_UNIMPLEMENTED_KINDS = ("jev_decision", "nanojev_batch", "laya_local")
+
+#: Per-family hard cap on `batch_max_candidates` (section 4 / L25).  A row above its
+#: family's cap is `field_invalid` before any call.  The `jev_decision` cap is the tightest
+#: VERIFIED row limit in that family (Simple-Jev `choice`, 2-50); the implemented kinds keep
+#: the architecture's 256-candidate ceiling.
+FAMILY_BATCH_LIMITS = {
+    "local": 256,
+    "openai_compatible": 256,
+    "jev_decision": 50,
+    "nanojev_batch": 255,
+    "laya_local": 20,
+}
+
+#: Closed transform labels (section 8.1).  A transform names the per-row request/response
+#: shape used when it differs from `/chat/completions`; there is no runtime guessing between
+#: spellings.
+TRANSFORMS = ("sj-choice-batch-v1", "laya-choice-v1")
+#: Families whose request shape is NOT `/chat/completions`: they MUST declare a transform.
+TRANSFORM_REQUIRED_KINDS = ("jev_decision", "laya_local")
+ENDPOINT_MODES = ("in_process", "loopback_sidecar")
+
+#: Provider-row data classes (section 2.3), most-public first.  A request may use only a row
+#: whose class is AT LEAST as tight as the request's own class (section 3.4 / L21).
+ROW_DATA_CLASSES = ("public", "internal", "private")
+#: Default data class of a request when the operator does not declare one (the CLI
+#: ``--data-class`` flag).  Most-public is the pre-existing behaviour: no row is filtered out
+#: unless the operator says the payload is tighter than that.
+DEFAULT_REQUEST_DATA_CLASS = "public"
+#: Ranking used for that comparison.  `restricted` is a profile-candidate class, not a row
+#: class: no provider row can ever serve a `restricted` request (fail closed).
+DATA_CLASS_RANK = {"public": 0, "internal": 1, "private": 2, "restricted": 3}
 
 CONFIG_FIELDS = ("schema_version", "providers", "default_provider", "allow_fallback")
 ROW_FIELDS = (
@@ -91,6 +140,10 @@ ROW_FIELDS = (
     "base_url",
     "model",
     "api_key_env",
+    "transform",
+    "endpoint_mode",
+    "data_class",
+    "surfaces",
     "allow_private_network",
     "timeout_s",
     "max_retries",
@@ -120,6 +173,17 @@ MIN_CONFIDENCE_TAXONOMY = 0.90
 FALLBACK_TRIGGER_CODES = ("transport_failed", "http_status")
 
 DISABLED_REASON_KEY_UNSET = "api_key_env_unset"
+
+#: The built-in local adapter's model id.  Without `--providers` the running backend is the
+#: deterministic local scorer, and an ACTIVE calibration must still name this exact key to
+#: apply to it (L16/L23) -- a calibration fitted for a hosted model never silently governs a
+#: local-only run.
+LOCAL_MODEL_ID = "local-deterministic"
+
+
+def local_backend_key() -> Dict[str, Any]:
+    """The ``(kind, model, transform)`` key of the built-in local backend."""
+    return {"kind": "local", "model": LOCAL_MODEL_ID, "transform": None}
 
 #: payload content tokens (closed domain, checked by assert_hash_only_payload)
 BATCH_CONTENT_TOKEN = "batch-score"
@@ -304,13 +368,22 @@ def _validate_base_url(url: Any, allow_private_network: bool, path: str) -> str:
 
 @dataclass(frozen=True)
 class ProviderRow:
-    """One ``providers.json`` row.  Holds the API key env var NAME, never a value."""
+    """One ``providers.json`` row.  Holds the API key env var NAME, never a value.
+
+    The row is the ONLY place a family binding lives: ``kind`` selects the family,
+    ``transform``/``endpoint_mode`` select the request shape, ``data_class`` and ``surfaces``
+    declare which requests the row may ever be offered (section 2.3 / L21).
+    """
 
     id: str
     kind: str
     base_url: Optional[str] = None
     model: str = ""
     api_key_env: Optional[str] = None
+    transform: Optional[str] = None
+    endpoint_mode: Optional[str] = None
+    data_class: str = "public"
+    surfaces: Tuple[str, ...] = SURFACES
     allow_private_network: bool = False
     timeout_s: float = DEFAULT_TIMEOUT_S
     max_retries: int = DEFAULT_MAX_RETRIES
@@ -319,25 +392,68 @@ class ProviderRow:
     supports_taxonomy_proposal: bool = False
 
     @property
+    def implemented(self) -> bool:
+        """True when this head ships a real adapter for the row's family."""
+        return self.kind in IMPLEMENTED_KINDS
+
+    @property
+    def is_in_process(self) -> bool:
+        """True when the row runs inside this process (no socket at all)."""
+        return self.kind == "local" or (
+            self.kind == "laya_local" and self.endpoint_mode == "in_process"
+        )
+
+    @property
     def requires_network(self) -> bool:
-        return self.kind == "openai_compatible"
+        return self.kind == "openai_compatible" or (
+            self.kind == "laya_local" and self.endpoint_mode == "loopback_sidecar"
+        )
+
+    @property
+    def batch_limit(self) -> int:
+        return FAMILY_BATCH_LIMITS.get(self.kind, BATCH_CANDIDATES_CAP)
+
+    def supports_surface(self, surface: str) -> bool:
+        """A row that does not list a surface is NEVER a candidate for it (section 2.3)."""
+        return str(surface) in self.surfaces
+
+    def class_allows(self, request_class: str) -> bool:
+        """True when a request of ``request_class`` may be offered to this row (L21).
+
+        The comparison is fail closed both ways: an unknown request class ranks above every
+        row class (no row may see it) and an unknown row class cannot be constructed.
+        """
+        request_rank = DATA_CLASS_RANK.get(str(request_class), 99)
+        return request_rank <= DATA_CLASS_RANK.get(self.data_class, -1)
 
     def chat_completions_url(self) -> str:
         return (self.base_url or "").rstrip("/") + "/chat/completions"
 
     def to_capability(self, api_key_present: bool, enabled: bool, disabled_reason: Optional[str]) -> Dict[str, Any]:
-        """Booleans + non-secret labels only (D1): never a key value or length."""
+        """Booleans + non-secret labels only (D1): never a key value or length.
+
+        Everything here is a declared, non-secret label: the env var NAME is not secret
+        material, its VALUE and any derived statistic (prefix, length, digest, entropy) is.
+        """
         return {
             "id": self.id,
             "kind": self.kind,
+            "implemented": self.implemented,
             "requires_network": self.requires_network,
-            "supports_batch_scores": self.requires_network,
+            "supports_batch_scores": self.implemented,
             "supports_taxonomy_proposal": bool(self.supports_taxonomy_proposal),
             "model": self.model,
             "api_key_env": self.api_key_env,
             "api_key_present": bool(api_key_present),
             "enabled": bool(enabled),
             "disabled_reason": disabled_reason,
+            "surfaces": list(self.surfaces),
+            "data_class": self.data_class,
+            "transform": self.transform,
+            "endpoint_mode": self.endpoint_mode,
+            "profile_duty_eligible": bool(
+                enabled and self.implemented and self.supports_surface("profile")
+            ),
         }
 
 
@@ -457,8 +573,49 @@ def _float_field(
     return number
 
 
+def _enum_list_field(
+    obj: Mapping[str, Any],
+    key: str,
+    path: str,
+    provider_id: Optional[str],
+    allowed: Sequence[str],
+    default: Sequence[str],
+) -> Tuple[str, ...]:
+    """A closed, non-empty, duplicate-free list of declared labels (order preserved)."""
+    value = obj.get(key)
+    if value is None:
+        return tuple(default)
+    _need(
+        isinstance(value, list) and len(value) > 0 and all(isinstance(v, str) for v in value),
+        "field_invalid",
+        "%s.%s must be a non-empty list of strings" % (path, key),
+        provider_id,
+    )
+    items = [str(v) for v in value]
+    unknown = sorted({v for v in items if v not in allowed})
+    _need(
+        not unknown,
+        "field_invalid",
+        "%s.%s value(s) %s are outside the closed domain %s" % (path, key, unknown, list(allowed)),
+        provider_id,
+    )
+    _need(
+        len(set(items)) == len(items),
+        "field_invalid",
+        "%s.%s must not repeat a value" % (path, key),
+        provider_id,
+    )
+    return tuple(items)
+
+
 def parse_provider_row(obj: Any, index: int) -> ProviderRow:
-    """Validate one row of the closed ``providers`` schema (D3)."""
+    """Validate one row of the closed ``providers`` schema (D3).
+
+    Order of the checks is deliberate: token domains first (``kind_unknown``), then the
+    family field rules, then the fail-closed refusal of a designed-but-unimplemented family
+    (``kind_unimplemented``), and only then the per-kind endpoint/key rules.  Nothing here
+    opens a socket, reads an environment value, or coerces an out-of-domain token.
+    """
     path = "providers[%d]" % index
     raw = _closed(obj, ROW_FIELDS, path)
     provider_id = cast(str, _str_field(raw, "id", path, PROVIDER_ID_RE))
@@ -475,10 +632,112 @@ def parse_provider_row(obj: Any, index: int) -> ProviderRow:
     timeout_s = _float_field(raw, "timeout_s", path, provider_id, DEFAULT_TIMEOUT_S, 0.1, MAX_TIMEOUT_S)
     max_retries = _int_field(raw, "max_retries", path, provider_id, DEFAULT_MAX_RETRIES, 0, MAX_RETRIES_CAP)
     max_tokens = _int_field(raw, "max_tokens", path, provider_id, DEFAULT_MAX_TOKENS, 1, MAX_TOKENS_CAP)
+    #: the family cap is known before the field default, so an omitted `batch_max_candidates`
+    #: never defaults ABOVE the family's verified limit (it would be an instant field_invalid)
+    family_limit = FAMILY_BATCH_LIMITS[kind]
     batch_max_candidates = _int_field(
-        raw, "batch_max_candidates", path, provider_id, DEFAULT_BATCH_MAX_CANDIDATES, 1, BATCH_CANDIDATES_CAP
+        raw,
+        "batch_max_candidates",
+        path,
+        provider_id,
+        min(DEFAULT_BATCH_MAX_CANDIDATES, family_limit),
+        1,
+        BATCH_CANDIDATES_CAP,
     )
     supports_taxonomy_proposal = _bool_field(raw, "supports_taxonomy_proposal", path, provider_id)
+
+    # -- family field rules (section 8.1): a gap is a hard error, never a coercion --------
+    transform = _str_field(raw, "transform", path, required=False, provider_id=provider_id)
+    if transform is not None:
+        _need(
+            transform in TRANSFORMS,
+            "field_invalid",
+            "%s.transform %r is not one of the declared transforms %s"
+            % (path, transform, list(TRANSFORMS)),
+            provider_id,
+        )
+    endpoint_mode = _str_field(raw, "endpoint_mode", path, required=False, provider_id=provider_id)
+    if endpoint_mode is not None:
+        _need(
+            endpoint_mode in ENDPOINT_MODES,
+            "field_invalid",
+            "%s.endpoint_mode %r is not one of %s" % (path, endpoint_mode, list(ENDPOINT_MODES)),
+            provider_id,
+        )
+    declared_class = _str_field(raw, "data_class", path, required=False, provider_id=provider_id)
+    if declared_class is not None:
+        _need(
+            declared_class in ROW_DATA_CLASSES,
+            "field_invalid",
+            "%s.data_class %r is not one of %s" % (path, declared_class, list(ROW_DATA_CLASSES)),
+            provider_id,
+        )
+    surfaces = _enum_list_field(raw, "surfaces", path, provider_id, SURFACES, SURFACES)
+
+    if kind in TRANSFORM_REQUIRED_KINDS:
+        _need(
+            transform is not None,
+            "transform_required",
+            "%s: kind %r does not speak /chat/completions and must declare a transform "
+            "(one of %s)" % (path, kind, list(TRANSFORMS)),
+            provider_id,
+        )
+    else:
+        _need(
+            transform is None,
+            "field_invalid",
+            "%s: kind %r speaks the /chat/completions shape; transform is not allowed on it"
+            % (path, kind),
+            provider_id,
+        )
+    if kind == "laya_local":
+        _need(
+            endpoint_mode is not None,
+            "field_invalid",
+            "%s: kind 'laya_local' must declare endpoint_mode (in_process | loopback_sidecar)"
+            % path,
+            provider_id,
+        )
+    else:
+        _need(
+            endpoint_mode is None,
+            "field_invalid",
+            "%s: endpoint_mode is only meaningful for the laya_local family" % path,
+            provider_id,
+        )
+
+    _need(
+        batch_max_candidates <= family_limit,
+        "field_invalid",
+        "%s.batch_max_candidates %d exceeds the %r family limit of %d (L25: an oversized batch "
+        "is refused at load, never split or truncated)"
+        % (path, batch_max_candidates, kind, family_limit),
+        provider_id,
+    )
+    # -- designed-but-unimplemented families fail closed at LOAD (section 2.1) ------------
+    _need(
+        kind in IMPLEMENTED_KINDS,
+        "kind_unimplemented",
+        "%s: family %r is designed but NOT implemented at this head (implemented: %s); "
+        "the row is refused, never downgraded to the local scorer"
+        % (path, kind, list(IMPLEMENTED_KINDS)),
+        provider_id,
+    )
+
+    # -- data class default + the in-process-only rule for `private` (section 2.3) --------
+    in_process = kind == "local" or (kind == "laya_local" and endpoint_mode == "in_process")
+    if declared_class is None:
+        data_class = "private" if in_process else "public"
+    else:
+        if declared_class == "private":
+            _need(
+                in_process,
+                "field_invalid",
+                "%s: data_class 'private' is reserved for in-process rows; a network row may be "
+                "at most 'internal'" % path,
+                provider_id,
+            )
+        data_class = declared_class
 
     if kind == "local":
         base_url = _str_field(raw, "base_url", path, required=False, provider_id=provider_id)
@@ -495,7 +754,7 @@ def parse_provider_row(obj: Any, index: int) -> ProviderRow:
             provider_id,
         )
         model = _str_field(raw, "model", path, MODEL_ID_RE, required=False, provider_id=provider_id,
-                           default="local-deterministic") or "local-deterministic"
+                           default=LOCAL_MODEL_ID) or LOCAL_MODEL_ID
         api_key_env = _str_field(raw, "api_key_env", path, API_KEY_ENV_RE, required=False,
                                  provider_id=provider_id)
         return ProviderRow(
@@ -504,6 +763,10 @@ def parse_provider_row(obj: Any, index: int) -> ProviderRow:
             base_url=None,
             model=model,
             api_key_env=api_key_env,
+            transform=None,
+            endpoint_mode=None,
+            data_class=data_class,
+            surfaces=surfaces,
             allow_private_network=allow_private_network,
             timeout_s=timeout_s,
             max_retries=max_retries,
@@ -525,6 +788,10 @@ def parse_provider_row(obj: Any, index: int) -> ProviderRow:
         base_url=base_url,
         model=model,
         api_key_env=api_key_env,
+        transform=transform,
+        endpoint_mode=endpoint_mode,
+        data_class=data_class,
+        surfaces=surfaces,
         allow_private_network=allow_private_network,
         timeout_s=timeout_s,
         max_retries=max_retries,
@@ -678,13 +945,82 @@ class ProviderRegistry:
             out.append(row.to_capability(self.api_key_present(row), reason is None, reason))
         return out
 
+    # -- eligibility (section 2.3 / L21) ----------------------------------
+
+    @staticmethod
+    def _require_row_eligible(
+        row: ProviderRow,
+        provider_id: str,
+        surface: Optional[str] = None,
+        request_class: Optional[str] = None,
+    ) -> None:
+        """Fail closed when a row may not be offered a surface or a data class.
+
+        Both refusals are ``ProviderConfigError``: they are configuration failures, so they
+        are never retried and never fall back to another row (D-D).
+        """
+        if surface is not None:
+            _need(
+                row.supports_surface(surface),
+                "surface_unavailable",
+                "provider %r does not declare the %r surface (surfaces=%s)"
+                % (provider_id, surface, list(row.surfaces)),
+                provider_id,
+            )
+        if request_class is not None:
+            _need(
+                row.class_allows(request_class),
+                "data_class_refused",
+                "provider %r (data_class=%s) may not be offered a %r request"
+                % (provider_id, row.data_class, request_class),
+                provider_id,
+            )
+
+    def eligible_rows(
+        self, surface: Optional[str] = None, request_class: Optional[str] = None
+    ) -> List[ProviderRow]:
+        """Rows that may be considered for a call, in declared order.
+
+        Eligibility is a FILTER computed before any model call, never a score and never a
+        downgrade: a row that is not returned is simply one this request may not be offered
+        to.  An omitted ``surface``/``request_class`` means "no filter on that axis".
+        """
+        out: List[ProviderRow] = []
+        for row in self.rows:
+            if surface is not None and not row.supports_surface(surface):
+                continue
+            if request_class is not None and not row.class_allows(request_class):
+                continue
+            out.append(row)
+        return out
+
+    def rows_for(self, surface: str, request_class: Optional[str] = None) -> List[str]:
+        """The eligible provider ids for one surface (declared order preserved)."""
+        return [row.id for row in self.eligible_rows(surface=surface, request_class=request_class)]
+
     # -- selection ---------------------------------------------------------
 
+    def primary_id(self) -> str:
+        """The chain head: the declared ``default_provider``, or the only declared row."""
+        if self.default_provider is not None:
+            return self.default_provider
+        if len(self.order) == 1:
+            return self.order[0]
+        raise ProviderConfigError(
+            "provider_selection_ambiguous",
+            "no default_provider declared and the registry is not a single provider",
+        )
+
     def backend_for(
-        self, provider_id: str, transport: Optional[Transport] = None
+        self,
+        provider_id: str,
+        transport: Optional[Transport] = None,
+        surface: Optional[str] = None,
+        request_class: Optional[str] = None,
     ) -> ClassificationBackend:
         """Build ONE backend.  A disabled provider is a structured hard error (D3)."""
         row = self.row(provider_id)
+        self._require_row_eligible(row, provider_id, surface=surface, request_class=request_class)
         reason = self.disabled_reason(row)
         if reason is not None:
             raise ProviderConfigError(
@@ -694,24 +1030,43 @@ class ProviderRegistry:
             return SyntheticBackend()
         return OpenAICompatibleBackend(row, api_key=self.api_key(row), transport=transport)
 
-    def select_backend(self, transport: Optional[Transport] = None) -> ClassificationBackend:
-        """The entry point used by the CLI: one backend, or the declared chain."""
-        if self.default_provider is not None:
-            primary = self.default_provider
-        elif len(self.order) == 1:
-            primary = self.order[0]
-        else:
-            raise ProviderConfigError(
-                "provider_selection_ambiguous",
-                "no default_provider declared and the registry is not a single provider",
-            )
+    def select_backend(
+        self,
+        transport: Optional[Transport] = None,
+        surface: Optional[str] = None,
+        request_class: Optional[str] = None,
+    ) -> ClassificationBackend:
+        """The entry point used by the CLI: one backend, or the declared chain.
+
+        ``surface`` and ``request_class`` filter the table BEFORE anything is built: an
+        explicitly named ``default_provider`` that fails either filter is a hard error (the
+        operator named it, so it is never silently substituted), while automatic selection
+        and the fallback chain are drawn only from the filtered set.
+        """
+        primary = self.primary_id()
+        self._require_row_eligible(self.row(primary), primary, surface=surface, request_class=request_class)
         if self.allow_fallback and len(self.order) > 1:
-            ordered = [primary] + [pid for pid in self.order if pid != primary]
+            eligible = [
+                row.id for row in self.eligible_rows(surface=surface, request_class=request_class)
+            ]
+            ordered = [primary] + [pid for pid in eligible if pid != primary]
             entries: List[Tuple[str, ClassificationBackend]] = []
             for pid in ordered:
-                entries.append((pid, self.backend_for(pid, transport=transport)))
+                entries.append(
+                    (
+                        pid,
+                        self.backend_for(
+                            pid,
+                            transport=transport,
+                            surface=surface,
+                            request_class=request_class,
+                        ),
+                    )
+                )
             return ProviderChainBackend(entries, chain_order=ordered)
-        return self.backend_for(primary, transport=transport)
+        return self.backend_for(
+            primary, transport=transport, surface=surface, request_class=request_class
+        )
 
 
 # --------------------------------------------------------------------------
@@ -933,6 +1288,16 @@ class OpenAICompatibleBackend(ClassificationBackend):
             # unknown surface tokens are refused, never coerced onto a known surface
             raise ProviderContractError(
                 "unknown_surface", "unknown surface %r" % (surface,), provider_id=self.row.id
+            )
+        if not self.row.supports_surface(surface):
+            # A surface the row does not declare is refused before anything is counted or
+            # sent: the call is never rerouted to a different provider for a different
+            # surface, and it is never quietly scored by another family.
+            raise ProviderConfigError(
+                "surface_unavailable",
+                "provider %r does not declare the %r surface (surfaces=%s)"
+                % (self.row.id, surface, list(self.row.surfaces)),
+                provider_id=self.row.id,
             )
         if len(candidate_ids) > self.row.batch_max_candidates:
             raise ProviderConfigError(

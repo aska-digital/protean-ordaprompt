@@ -77,20 +77,32 @@ def _build_candidates(args: argparse.Namespace, request: ClassificationRequest) 
 
 
 def _build_config(args: argparse.Namespace) -> RouterConfig:
+    from .providers import DEFAULT_REQUEST_DATA_CLASS, ProviderRegistry, local_backend_key
+
     config: RouterConfig
     if args.config:
         config = RouterConfig.from_dict(_load_json(args.config))
     else:
         config = RouterConfig()
     if args.calibration:
+        # L23: an inconsistent calibration state is refused HERE, at load, before any call.
         config.calibration = CalibrationModel.from_dict(_load_json(args.calibration))
     if args.providers:
         # D2: the ONLY way a provider enters the decision path.  No provider file ->
         # no provider code runs at all; the local deterministic adapter stands alone.
-        from .providers import ProviderRegistry
-
         registry = ProviderRegistry.from_file(args.providers)
-        config.backend = registry.select_backend()
+        request_class = getattr(args, "data_class", None) or DEFAULT_REQUEST_DATA_CLASS
+        # L21: a row below the request's data class is filtered before anything is built, and
+        # the named head is never silently substituted.
+        config.backend = registry.select_backend(request_class=request_class)
+        # L16/L23: an ACTIVE calibration binds to the (kind, model, transform) it was fitted
+        # for.  A mismatch is a hard error here -- never a silent downgrade and never a band
+        # upgrade on parameters fitted elsewhere.
+        config.calibration.check_provider_key(registry.row(registry.primary_id()))
+    else:
+        # Local-only run: the running batch scorer is the built-in deterministic adapter, and
+        # an active calibration must still name that exact key.
+        config.calibration.check_provider_key(local_backend_key())
     if args.enable_openrouter:
         from .adapter import OpenRouterBackend
 
@@ -181,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
             help="privacy class carried for every profile given by --profiles (closed enum)",
         )
         child.add_argument("--receipts-dir", help="append-only receipt directory")
+        child.add_argument(
+            "--data-class",
+            dest="data_class",
+            choices=("public", "internal", "private"),
+            default="public",
+            help="data class of THIS request (closed enum, default public); a provider row "
+            "whose declared data_class is below it is filtered out before selection and is "
+            "never offered the call",
+        )
         child.add_argument("--calibration", help="calibration model JSON (default: none -> nothing automatic)")
         child.add_argument("--config", help="router config JSON: router.backends.openrouter.enabled, legacy_fallback")
         child.add_argument("--providers", help="operator-supplied providers JSON (default: none -> local deterministic adapter only)")

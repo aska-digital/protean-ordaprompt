@@ -26,6 +26,10 @@ from .adapter import (
     sha256_hex,
 )
 from .providers import (
+    FAMILY_BATCH_LIMITS,
+    IMPLEMENTED_KINDS,
+    PROVIDER_KINDS,
+    ROW_DATA_CLASSES,
     OpenAICompatibleBackend,
     ProfileMetadataViolation,
     ProviderChainBackend,
@@ -39,6 +43,7 @@ from .providers import (
     TransportRequest,
     TransportResponse,
     assert_profile_payload_whitelisted,
+    local_backend_key,
     stdlib_transport,
 )
 from .receipts import ReceiptStore, assert_no_free_text
@@ -68,6 +73,8 @@ __all__ = [
     "ClassificationBackend",
     "ClassificationRequest",
     "DisabledByPolicy",
+    "FAMILY_BATCH_LIMITS",
+    "IMPLEMENTED_KINDS",
     "LabelRegistry",
     "OpenAICompatibleBackend",
     "OpenRouterBackend",
@@ -75,6 +82,8 @@ __all__ = [
     "ProfileCandidate",
     "ProfileMetadataViolation",
     "PROFILE_SENTINELS",
+    "PROVIDER_KINDS",
+    "ROW_DATA_CLASSES",
     "SURFACES",
     "ProviderChainBackend",
     "ProviderConfigError",
@@ -97,6 +106,7 @@ __all__ = [
     "assert_no_free_text",
     "assert_profile_payload_whitelisted",
     "canonicalize_redacted",
+    "local_backend_key",
     "route",
     "sha256_hex",
     "stdlib_transport",
