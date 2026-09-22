@@ -1,7 +1,9 @@
 {
+ "a_profile": 1.0,
  "a_session": 1.8240126717860812,
  "a_topic": 1.7773213884642816,
  "active": false,
+ "b_profile": 0.0,
  "b_session": -0.6516251503992816,
  "b_topic": -1.8303991314509003,
  "model_id": "none",

@@ -116,10 +116,10 @@
  "fixtures": {
   "byte_verified": {
    "byte_identical": true,
-   "manifest_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe"
+   "manifest_sha256": "d99f2b3ebd9724d2b63a2b1a6a2b3c8bd63dc2a898088df39602c86f86b1fa90"
   },
   "cases": 400,
-  "cases_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe",
+  "cases_sha256": "d99f2b3ebd9724d2b63a2b1a6a2b3c8bd63dc2a898088df39602c86f86b1fa90",
   "holdout": 133,
   "kinds": {
    "ambiguous/clean_reuse": 30,
@@ -138,7 +138,7 @@
   "soft_target_rate": 0.4325,
   "tuning": 267
  },
- "generated_at": "2026-09-22T12:36:09Z",
+ "generated_at": "2026-09-22T18:15:59Z",
  "policy": {
   "contamination_weights": {
    "project_mismatch": 0.7,
@@ -181,10 +181,10 @@
    "calibration_missing": 400
   },
   "latency_ms": {
-   "max": 0.4587,
-   "mean": 0.0479,
-   "p50": 0.0402,
-   "p95": 0.0894
+   "max": 4.3695,
+   "mean": 0.0511,
+   "p50": 0.0397,
+   "p95": 0.0512
   },
   "session": {
    "clean_targets": 280,
@@ -229,10 +229,10 @@
     "calibration_missing": 133
    },
    "latency_ms": {
-    "max": 0.0863,
-    "mean": 0.0395,
-    "p50": 0.0382,
-    "p95": 0.0518
+    "max": 0.074,
+    "mean": 0.0406,
+    "p50": 0.0403,
+    "p95": 0.0536
    },
    "session": {
     "clean_targets": 93,
@@ -276,10 +276,10 @@
     "calibration_missing": 267
    },
    "latency_ms": {
-    "max": 0.316,
-    "mean": 0.0461,
-    "p50": 0.0393,
-    "p95": 0.0822
+    "max": 0.2513,
+    "mean": 0.0428,
+    "p50": 0.0403,
+    "p95": 0.0567
    },
    "session": {
     "clean_targets": 187,
@@ -307,7 +307,7 @@
    }
   }
  },
- "wall_clock_s": 28.77,
+ "wall_clock_s": 28.65,
  "with_calibration_holdout": {
   "abstention_rate": 0.270677,
   "automatic_rate": 0.458647,
@@ -334,10 +334,10 @@
    "taxonomy_rejected": 13
   },
   "latency_ms": {
-   "max": 0.3067,
-   "mean": 0.0533,
-   "p50": 0.0475,
-   "p95": 0.0851
+   "max": 0.2182,
+   "mean": 0.0489,
+   "p50": 0.0482,
+   "p95": 0.0605
   },
   "session": {
    "clean_targets": 93,
@@ -395,10 +395,10 @@
    "taxonomy_rejected": 20
   },
   "latency_ms": {
-   "max": 0.3366,
-   "mean": 0.052,
-   "p50": 0.0479,
-   "p95": 0.0831
+   "max": 0.1929,
+   "mean": 0.0483,
+   "p50": 0.0481,
+   "p95": 0.0613
   },
   "session": {
    "clean_targets": 187,

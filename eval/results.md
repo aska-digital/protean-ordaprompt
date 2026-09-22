@@ -2,7 +2,7 @@
 
 > SYNTHETIC FIXTURES ONLY: outcomes are designed by the fixture generator and scored by the deterministic hash backend. These numbers validate the routing/calibration machinery, not real-world classifier quality. Real calibration requires real receipts plus human feedback.
 
-Generated: 2026-09-22T12:36:09Z   Cases: 400 (tuning 267 / holdout 133)
+Generated: 2026-09-22T18:15:59Z   Cases: 400 (tuning 267 / holdout 133)
 
 ## Holdout metrics (calibrated simulation)
 - topic accuracy (labelled): 1.0000 over 103 cases
@@ -13,7 +13,7 @@ Generated: 2026-09-22T12:36:09Z   Cases: 400 (tuning 267 / holdout 133)
 - session fragmentation: 0.0000 over 93 clean-reuse cases
 - session decision accuracy: 1.0000 over 128 labelled cases
 - abstention rate: 0.2707 ; automatic rate: 0.4586
-- latency per decision (ms): mean 0.0533 / p50 0.0475 / p95 0.0851
+- latency per decision (ms): mean 0.0489 / p50 0.0482 / p95 0.0605
 - simulated tokens loaded: 20800 total, 156.39 per decision, 202000 refused for contamination
 
 ## Band distribution
@@ -54,4 +54,4 @@ Generated: 2026-09-22T12:36:09Z   Cases: 400 (tuning 267 / holdout 133)
 - novel/clean_reuse: 30
 - novel/no_sessions: 15
 
-Wall clock: 28.77s
+Wall clock: 28.65s

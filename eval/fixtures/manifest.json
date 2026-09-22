@@ -1,6 +1,6 @@
 {
  "cases": 400,
- "cases_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe",
+ "cases_sha256": "d99f2b3ebd9724d2b63a2b1a6a2b3c8bd63dc2a898088df39602c86f86b1fa90",
  "generator_version": "fixturegen-1.0.0",
  "kind_counts": {
   "ambiguous/clean_reuse": 30,
