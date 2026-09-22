@@ -1,0 +1,11 @@
+{
+ "config_rev": "1.0.0",
+ "context_hash": "sha256:c75c3eb7e3af579c77619bd5d633cdedb5fb646684a129839b98b32951446b76",
+ "context_token_estimate": 1200,
+ "explicit_directive": null,
+ "project_id_hash": "sha256:e868a65f739d665238d639ac1fa4fb17530c95e0c298cdc0da43275a5df0c860",
+ "prompt_hash": "sha256:fa6be5653f5d3b93a041901bfe6a1e1c890252ef4932aef162520c5616a9f9b9",
+ "request_id": "0f0f0f0f-0000-4000-8000-000000000005",
+ "schema": "ordapilot.classification_request/1",
+ "ts": "2026-09-06T05:00:00Z"
+}

@@ -1,0 +1,16 @@
+{
+ "a_session": 1.8240126717860812,
+ "a_topic": 1.7773213884642816,
+ "active": false,
+ "b_session": -0.6516251503992816,
+ "b_topic": -1.8303991314509003,
+ "model_id": "none",
+ "unlock_evidence": {
+  "holdout_in_band_ge_50": true,
+  "holdout_in_band_precision_ge_0.98": true,
+  "holdout_session_brier_le_0.10": true,
+  "holdout_session_ece_le_0.05": false,
+  "holdout_topic_brier_le_0.10": true,
+  "holdout_topic_ece_le_0.05": false
+ }
+}

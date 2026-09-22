@@ -1,0 +1,428 @@
+{
+ "band_table_holdout": {
+  "ambiguous/clean_reuse": {
+   "_n": 10,
+   "fallback_escalate": 10
+  },
+  "clear_topic/clean_reuse": {
+   "_n": 58,
+   "automatic": 52,
+   "fallback_escalate": 6
+  },
+  "clear_topic/contaminated": {
+   "_n": 5,
+   "abstain_or_new_session": 5
+  },
+  "clear_topic/expensive_context": {
+   "_n": 5,
+   "abstain_or_new_session": 5
+  },
+  "clear_topic/new_session_argmax": {
+   "_n": 5,
+   "abstain_or_new_session": 5
+  },
+  "clear_topic/no_sessions": {
+   "_n": 10,
+   "automatic": 9,
+   "fallback_escalate": 1
+  },
+  "clear_topic/session_near_tie": {
+   "_n": 5,
+   "abstain_or_new_session": 5
+  },
+  "low_confidence/clean_reuse": {
+   "_n": 5,
+   "abstain_or_new_session": 5
+  },
+  "near_tie/clean_reuse": {
+   "_n": 10,
+   "abstain_or_new_session": 7,
+   "fallback_escalate": 3
+  },
+  "near_tie/no_sessions": {
+   "_n": 5,
+   "abstain_or_new_session": 4,
+   "fallback_escalate": 1
+  },
+  "novel/clean_reuse": {
+   "_n": 10,
+   "fallback_escalate": 10
+  },
+  "novel/no_sessions": {
+   "_n": 5,
+   "fallback_escalate": 5
+  }
+ },
+ "calibration": {
+  "holdout_session_calibrated": {
+   "brier": 0.023569506595449926,
+   "ece": 0.06346517897538147,
+   "n": 98,
+   "nll": 0.08637792813612859
+  },
+  "holdout_topic_calibrated": {
+   "brier": 0.040778049772054015,
+   "ece": 0.1330175700969476,
+   "n": 106,
+   "nll": 0.16429857832444592
+  },
+  "method": "platt scaling on logit(raw), fitted on the TUNING split only",
+  "model_id": "none",
+  "production_active": false,
+  "session": {
+   "a": 1.8240126717860812,
+   "b": -0.6516251503992816,
+   "fitted_on_kinds": [
+    "clean_reuse",
+    "session_near_tie"
+   ],
+   "logit_mean": 2.33415445131289,
+   "logit_sd": 0.6943173347474744,
+   "n": 197,
+   "note": "session calibrator is fitted only on reuse-contemplated cases; contamination and token cost are priced by the policy, not the calibrator",
+   "positives": 187
+  },
+  "topic": {
+   "a": 1.7773213884642816,
+   "b": -1.8303991314509003,
+   "logit_mean": 2.3809997315463716,
+   "logit_sd": 0.9475188388795792,
+   "n": 210,
+   "positives": 177
+  },
+  "tuning_session_calibrated": {
+   "brier": 0.02020267101849771,
+   "ece": 0.06076996408046723,
+   "n": 197,
+   "nll": 0.07952965582814722
+  },
+  "tuning_topic_calibrated": {
+   "brier": 0.03610583259973986,
+   "ece": 0.12183320495148012,
+   "n": 210,
+   "nll": 0.14961944431093324
+  },
+  "unlock_checks": {
+   "holdout_in_band_ge_50": true,
+   "holdout_in_band_precision_ge_0.98": true,
+   "holdout_session_brier_le_0.10": true,
+   "holdout_session_ece_le_0.05": false,
+   "holdout_topic_brier_le_0.10": true,
+   "holdout_topic_ece_le_0.05": false
+  },
+  "unlocked": false
+ },
+ "disclaimer": "SYNTHETIC FIXTURES ONLY: outcomes are designed by the fixture generator and scored by the deterministic hash backend. These numbers validate the routing/calibration machinery, not real-world classifier quality. Real calibration requires real receipts plus human feedback.",
+ "fixtures": {
+  "byte_verified": {
+   "byte_identical": true,
+   "manifest_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe"
+  },
+  "cases": 400,
+  "cases_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe",
+  "holdout": 133,
+  "kinds": {
+   "ambiguous/clean_reuse": 30,
+   "clear_topic/clean_reuse": 175,
+   "clear_topic/contaminated": 15,
+   "clear_topic/expensive_context": 15,
+   "clear_topic/new_session_argmax": 15,
+   "clear_topic/no_sessions": 30,
+   "clear_topic/session_near_tie": 15,
+   "low_confidence/clean_reuse": 15,
+   "near_tie/clean_reuse": 30,
+   "near_tie/no_sessions": 15,
+   "novel/clean_reuse": 30,
+   "novel/no_sessions": 15
+  },
+  "soft_target_rate": 0.4325,
+  "tuning": 267
+ },
+ "generated_at": "2026-09-22T12:36:09Z",
+ "policy": {
+  "contamination_weights": {
+   "project_mismatch": 0.7,
+   "secret_presence": 0.5,
+   "stale_context": 0.2,
+   "topic_drift": 0.4
+  },
+  "one_batch_call_per_surface": {
+   "expected_session_calls": 340,
+   "expected_topic_calls": 400,
+   "holds": true,
+   "note": "one batch call per surface; the session surface is skipped when the candidate set has no live session",
+   "session_calls": 340,
+   "session_side_skipped_cases": 60,
+   "topic_calls": 400
+  },
+  "thresholds": {
+   "mu_novel": 0.25,
+   "mu_sess": 0.25,
+   "mu_topic": 0.2,
+   "tau_novel": 0.85,
+   "tau_sess_sim": 0.9,
+   "tau_sess_util": 0.55,
+   "tau_topic": 0.85
+  }
+ },
+ "production_mode": {
+  "abstention_rate": 0.85,
+  "automatic_rate": 0.0,
+  "bands": {
+   "abstain_or_new_session": 340,
+   "fallback_escalate": 60
+  },
+  "cases": 400,
+  "decisions": {
+   "escalate": 60,
+   "new_session": 340
+  },
+  "escalation_codes": {
+   "calibration_missing": 400
+  },
+  "latency_ms": {
+   "max": 0.4587,
+   "mean": 0.0479,
+   "p50": 0.0402,
+   "p95": 0.0894
+  },
+  "session": {
+   "clean_targets": 280,
+   "contamination_rate": 0.0,
+   "decision_accuracy": 0.272727,
+   "fragmentation": 1.0,
+   "labelled_cases": 385,
+   "reuse_accuracy": 0.0,
+   "reuse_granted": 0
+  },
+  "token_cost": {
+   "contaminated_tokens_refused": 606000,
+   "mean_per_decision": 0.0,
+   "reuse_decisions": 0,
+   "simulated_total_tokens_loaded": 0
+  },
+  "topic": {
+   "accuracy": 1.0,
+   "automatic_assignments": 0,
+   "automatic_precision": 0.0,
+   "labelled_cases": 310,
+   "novel_calls": 52,
+   "novelty_precision": 0.865385,
+   "novelty_recall": 1.0
+  }
+ },
+ "schema": "ordaprompt.eval_results/1",
+ "uncalibrated_baseline": {
+  "holdout": {
+   "abstention_rate": 0.849624,
+   "automatic_rate": 0.0,
+   "bands": {
+    "abstain_or_new_session": 113,
+    "fallback_escalate": 20
+   },
+   "cases": 133,
+   "decisions": {
+    "escalate": 20,
+    "new_session": 113
+   },
+   "escalation_codes": {
+    "calibration_missing": 133
+   },
+   "latency_ms": {
+    "max": 0.0863,
+    "mean": 0.0395,
+    "p50": 0.0382,
+    "p95": 0.0518
+   },
+   "session": {
+    "clean_targets": 93,
+    "contamination_rate": 0.0,
+    "decision_accuracy": 0.273438,
+    "fragmentation": 1.0,
+    "labelled_cases": 128,
+    "reuse_accuracy": 0.0,
+    "reuse_granted": 0
+   },
+   "token_cost": {
+    "contaminated_tokens_refused": 202000,
+    "mean_per_decision": 0.0,
+    "reuse_decisions": 0,
+    "simulated_total_tokens_loaded": 0
+   },
+   "topic": {
+    "accuracy": 1.0,
+    "automatic_assignments": 0,
+    "automatic_precision": 0.0,
+    "labelled_cases": 103,
+    "novel_calls": 16,
+    "novelty_precision": 0.9375,
+    "novelty_recall": 1.0
+   }
+  },
+  "note": "with no validated calibration the automatic band MUST be unreachable (locked #5)",
+  "tuning": {
+   "abstention_rate": 0.850187,
+   "automatic_rate": 0.0,
+   "bands": {
+    "abstain_or_new_session": 227,
+    "fallback_escalate": 40
+   },
+   "cases": 267,
+   "decisions": {
+    "escalate": 40,
+    "new_session": 227
+   },
+   "escalation_codes": {
+    "calibration_missing": 267
+   },
+   "latency_ms": {
+    "max": 0.316,
+    "mean": 0.0461,
+    "p50": 0.0393,
+    "p95": 0.0822
+   },
+   "session": {
+    "clean_targets": 187,
+    "contamination_rate": 0.0,
+    "decision_accuracy": 0.272374,
+    "fragmentation": 1.0,
+    "labelled_cases": 257,
+    "reuse_accuracy": 0.0,
+    "reuse_granted": 0
+   },
+   "token_cost": {
+    "contaminated_tokens_refused": 404000,
+    "mean_per_decision": 0.0,
+    "reuse_decisions": 0,
+    "simulated_total_tokens_loaded": 0
+   },
+   "topic": {
+    "accuracy": 1.0,
+    "automatic_assignments": 0,
+    "automatic_precision": 0.0,
+    "labelled_cases": 207,
+    "novel_calls": 36,
+    "novelty_precision": 0.833333,
+    "novelty_recall": 1.0
+   }
+  }
+ },
+ "wall_clock_s": 28.77,
+ "with_calibration_holdout": {
+  "abstention_rate": 0.270677,
+  "automatic_rate": 0.458647,
+  "bands": {
+   "abstain_or_new_session": 36,
+   "automatic": 61,
+   "fallback_escalate": 36
+  },
+  "cases": 133,
+  "decisions": {
+   "escalate": 36,
+   "new_session": 36,
+   "session_reuse": 52,
+   "topic_assign": 9
+  },
+  "escalation_codes": {
+   "ambiguous_won": 10,
+   "below_margin": 6,
+   "below_min_score": 29,
+   "below_min_utility": 2,
+   "contamination_high": 5,
+   "new_session_argmax": 5,
+   "novel_below_threshold": 2,
+   "taxonomy_rejected": 13
+  },
+  "latency_ms": {
+   "max": 0.3067,
+   "mean": 0.0533,
+   "p50": 0.0475,
+   "p95": 0.0851
+  },
+  "session": {
+   "clean_targets": 93,
+   "contamination_rate": 0.0,
+   "decision_accuracy": 1.0,
+   "fragmentation": 0.0,
+   "labelled_cases": 128,
+   "reuse_accuracy": 1.0,
+   "reuse_granted": 93
+  },
+  "token_cost": {
+   "contaminated_tokens_refused": 202000,
+   "mean_per_decision": 156.391,
+   "reuse_decisions": 93,
+   "simulated_total_tokens_loaded": 20800
+  },
+  "topic": {
+   "accuracy": 1.0,
+   "automatic_assignments": 61,
+   "automatic_precision": 1.0,
+   "labelled_cases": 103,
+   "novel_calls": 16,
+   "novelty_precision": 0.9375,
+   "novelty_recall": 1.0
+  },
+  "would_be_automatic": {
+   "correct": 61,
+   "in_band": 61,
+   "precision": 1.0
+  }
+ },
+ "with_calibration_tuning": {
+  "abstention_rate": 0.254682,
+  "automatic_rate": 0.423221,
+  "bands": {
+   "abstain_or_new_session": 68,
+   "automatic": 113,
+   "fallback_escalate": 86
+  },
+  "cases": 267,
+  "decisions": {
+   "escalate": 86,
+   "new_session": 68,
+   "session_reuse": 97,
+   "topic_assign": 16
+  },
+  "escalation_codes": {
+   "ambiguous_won": 20,
+   "below_margin": 18,
+   "below_min_score": 64,
+   "below_min_utility": 2,
+   "contamination_high": 10,
+   "new_session_argmax": 10,
+   "novel_below_threshold": 10,
+   "taxonomy_rejected": 20
+  },
+  "latency_ms": {
+   "max": 0.3366,
+   "mean": 0.052,
+   "p50": 0.0479,
+   "p95": 0.0831
+  },
+  "session": {
+   "clean_targets": 187,
+   "contamination_rate": 0.0,
+   "decision_accuracy": 1.0,
+   "fragmentation": 0.0,
+   "labelled_cases": 257,
+   "reuse_accuracy": 1.0,
+   "reuse_granted": 187
+  },
+  "token_cost": {
+   "contaminated_tokens_refused": 404000,
+   "mean_per_decision": 145.318,
+   "reuse_decisions": 187,
+   "simulated_total_tokens_loaded": 38800
+  },
+  "topic": {
+   "accuracy": 1.0,
+   "automatic_assignments": 113,
+   "automatic_precision": 1.0,
+   "labelled_cases": 207,
+   "novel_calls": 36,
+   "novelty_precision": 0.833333,
+   "novelty_recall": 1.0
+  }
+ }
+}

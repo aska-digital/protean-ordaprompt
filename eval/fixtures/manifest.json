@@ -1,0 +1,25 @@
+{
+ "cases": 400,
+ "cases_sha256": "1342b6dcf640aab7b2f640f9360dce75f58259dd4fc0f5bb0e0d46bbd4bde8fe",
+ "generator_version": "fixturegen-1.0.0",
+ "kind_counts": {
+  "ambiguous/clean_reuse": 30,
+  "clear_topic/clean_reuse": 175,
+  "clear_topic/contaminated": 15,
+  "clear_topic/expensive_context": 15,
+  "clear_topic/new_session_argmax": 15,
+  "clear_topic/no_sessions": 30,
+  "clear_topic/session_near_tie": 15,
+  "low_confidence/clean_reuse": 15,
+  "near_tie/clean_reuse": 30,
+  "near_tie/no_sessions": 15,
+  "novel/clean_reuse": 30,
+  "novel/no_sessions": 15
+ },
+ "soft_target_rate": 0.4325,
+ "soft_targets_met": 173,
+ "split_counts": {
+  "holdout": 133,
+  "tuning": 267
+ }
+}

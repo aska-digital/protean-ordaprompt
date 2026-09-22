@@ -1,0 +1,743 @@
+"""Router core: batch comparison, three-band policy, session utility, labels.
+
+Pure decision logic -- no storage I/O, no network, no prompt text
+(leo-arch.md section 0 module boundaries).
+
+Locked constraints implemented here:
+  #1 batch comparison  -- exactly ONE backend call per surface, sentinels are
+                          ordinary candidates in the same batch;
+  #2 three-band policy -- automatic requires a minimum calibrated score AND a
+                          top-vs-second margin;
+  #3 stricter session  -- reuse prices token cost and contamination risk and
+                          always yields to ``new_session`` under ambiguity;
+  #5 calibration gate  -- with no *validated* calibration the automatic band is
+                          unreachable;
+  #6 provisional labels-- promotion needs k=3 corroborations across >= 2
+                          sessions and >= 2 days with no human override.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from .adapter import (
+    BackendError,
+    ClassificationBackend,
+    DisabledByPolicy,
+    OpenRouterBackend,
+    RequestHandle,
+    SyntheticBackend,
+)
+from .schemas import (
+    CONTAMINATION_WEIGHTS,
+    ROUTER_VERSION,
+    SCHEMA_RECEIPT,
+    CandidateSet,
+    ClassificationRequest,
+    RoutingDecision,
+    build_receipt,
+)
+
+BAND_ORDER = {"automatic": 0, "fallback_escalate": 1, "abstain_or_new_session": 2}
+BAND_CONSERVATIVE = ("automatic", "fallback_escalate", "abstain_or_new_session")
+
+TOPIC_SENTINEL_NOVEL = "novel"
+TOPIC_SENTINEL_AMBIGUOUS = "ambiguous"
+SESSION_SENTINEL_NEW = "new_session"
+
+
+# --------------------------------------------------------------------------
+# Thresholds (leo-arch.md section 3 defaults, config-rev pinned)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Thresholds:
+    tau_topic: float = 0.85
+    mu_topic: float = 0.20
+    tau_novel: float = 0.85
+    mu_novel: float = 0.25
+    tau_sess_sim: float = 0.90
+    tau_sess_util: float = 0.55
+    mu_sess: float = 0.25
+    # band floor / pricing constants from section 3 (not part of thresholds_used)
+    tau_low: float = 0.60
+    k_block: float = 0.50
+    w_cost: float = 0.30
+    w_contam: float = 0.50
+    new_session_utility: float = 0.35
+    context_cost_norm: int = 8000
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "tau_topic": self.tau_topic,
+            "mu_topic": self.mu_topic,
+            "tau_novel": self.tau_novel,
+            "mu_novel": self.mu_novel,
+            "tau_sess_sim": self.tau_sess_sim,
+            "tau_sess_util": self.tau_sess_util,
+            "mu_sess": self.mu_sess,
+        }
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, Any]) -> "Thresholds":
+        allowed = set(cls.__dataclass_fields__.keys())
+        unknown = sorted(set(obj.keys()) - allowed)
+        if unknown:
+            raise ValueError("unknown threshold field(s): %s" % (unknown,))
+        return cls(**{k: float(v) for k, v in obj.items()})
+
+
+# --------------------------------------------------------------------------
+# Calibration (leo-arch.md section 7)
+# --------------------------------------------------------------------------
+
+
+def _logit(p: float) -> float:
+    p = min(1.0 - 1e-6, max(1e-6, float(p)))
+    return math.log(p / (1.0 - p))
+
+
+def _sigmoid(x: float) -> float:
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+@dataclass(frozen=True)
+class CalibrationModel:
+    """Per-surface Platt scaling.  ``active`` is the automatic-band gate.
+
+    ``active`` MUST only be set True once the section-7 unlock criteria pass on
+    the HOLDOUT split (ECE <= 0.05, Brier <= 0.10, would-be-automatic precision
+    >= 0.98 with >= 50 holdout samples in band).  With ``active=False`` the
+    calibrator returns raw scores (identity) and nothing can be automatic.
+    """
+
+    model_id: str = "none"
+    active: bool = False
+    a_topic: float = 1.0
+    b_topic: float = 0.0
+    a_session: float = 1.0
+    b_session: float = 0.0
+    unlock_evidence: Optional[Dict[str, Any]] = None
+
+    def calibrate(self, surface: str, raw: float) -> float:
+        if not self.active:
+            return min(1.0, max(0.0, float(raw)))
+        if surface == "topic":
+            a, b = self.a_topic, self.b_topic
+        elif surface == "session":
+            a, b = self.a_session, self.b_session
+        else:
+            raise ValueError("unknown surface %r" % (surface,))
+        return min(1.0, max(0.0, _sigmoid(a * _logit(raw) + b)))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "active": self.active,
+            "a_topic": self.a_topic,
+            "b_topic": self.b_topic,
+            "a_session": self.a_session,
+            "b_session": self.b_session,
+            "unlock_evidence": self.unlock_evidence,
+        }
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, Any]) -> "CalibrationModel":
+        return cls(
+            model_id=str(obj.get("model_id", "none")),
+            active=bool(obj.get("active", False)),
+            a_topic=float(obj.get("a_topic", 1.0)),
+            b_topic=float(obj.get("b_topic", 0.0)),
+            a_session=float(obj.get("a_session", 1.0)),
+            b_session=float(obj.get("b_session", 0.0)),
+            unlock_evidence=obj.get("unlock_evidence"),
+        )
+
+
+# --------------------------------------------------------------------------
+# Provisional labels and the promotion rule (leo-arch.md section 6)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class LabelRecord:
+    topic_id: str
+    state: str = "provisional"
+    corroborations: List[Tuple[str, str, float]] = field(default_factory=list)
+    contradictions: int = 0
+    overrides: int = 0
+    demotions: int = 0
+
+
+class LabelRegistry:
+    """In-memory label states; emits ``<slug>:<transition>`` codes only."""
+
+    def __init__(self, promote_k: int = 3, min_sessions: int = 2, min_days: int = 2) -> None:
+        self.promote_k = promote_k
+        self.min_sessions = min_sessions
+        self.min_days = min_days
+        self.labels: Dict[str, LabelRecord] = {}
+
+    # -- state sync --------------------------------------------------------
+
+    def observe(self, candidates: CandidateSet) -> None:
+        for topic in candidates.topics:
+            record = self.labels.get(topic.topic_id)
+            if record is None:
+                self.labels[topic.topic_id] = LabelRecord(topic.topic_id, topic.label_state)
+            elif topic.label_state == "promoted" and record.state == "provisional":
+                # a candidate set may assert promotion; the registry keeps its own
+                # history and only promotes through the corroboration rule
+                pass
+
+    def create_provisional(self, topic_id: str) -> str:
+        record = self.labels.get(topic_id)
+        if record is None:
+            self.labels[topic_id] = LabelRecord(topic_id, "provisional")
+            return "%s:provisional" % topic_id
+        return "%s:provisional" % topic_id
+
+    # -- corroboration / promotion ----------------------------------------
+
+    def register_corroboration(
+        self,
+        topic_id: str,
+        session_id: str,
+        day: str,
+        calibrated: float,
+        tau_topic: float,
+    ) -> Optional[str]:
+        record = self.labels.get(topic_id)
+        if record is None:
+            return None
+        if calibrated < tau_topic:
+            return None
+        record.corroborations.append((session_id, day, float(calibrated)))
+        if record.state != "provisional":
+            return None
+        sessions = {c[0] for c in record.corroborations}
+        days = {c[1] for c in record.corroborations}
+        promoted = (
+            len(record.corroborations) >= self.promote_k
+            and len(sessions) >= self.min_sessions
+            and len(days) >= self.min_days
+            and record.overrides == 0
+        )
+        if promoted:
+            record.state = "promoted"
+            return "%s:promoted" % topic_id
+        return None
+
+    def record_human_override(self, topic_id: str) -> str:
+        record = self.labels.get(topic_id)
+        if record is None:
+            record = LabelRecord(topic_id, "provisional")
+            self.labels[topic_id] = record
+        record.overrides += 1
+        if record.state == "promoted":
+            record.state = "provisional"
+            record.demotions += 1
+            return "%s:demoted" % topic_id
+        if not record.corroborations:
+            record.state = "archived"
+            return "%s:archived" % topic_id
+        return "%s:provisional" % topic_id
+
+    def record_contradiction(self, topic_id: str, demote_at: int = 2) -> Optional[str]:
+        record = self.labels.get(topic_id)
+        if record is None:
+            return None
+        record.contradictions += 1
+        if record.state == "promoted" and record.contradictions >= demote_at:
+            record.state = "provisional"
+            record.demotions += 1
+            return "%s:demoted" % topic_id
+        return None
+
+    def state_of(self, topic_id: str) -> Optional[str]:
+        record = self.labels.get(topic_id)
+        return record.state if record else None
+
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class RouterConfig:
+    thresholds: Thresholds = field(default_factory=Thresholds)
+    calibration: CalibrationModel = field(default_factory=CalibrationModel)
+    backend: Optional[ClassificationBackend] = None
+    openrouter_backend: Optional[OpenRouterBackend] = None
+    legacy_fallback: bool = False
+    label_registry: LabelRegistry = field(default_factory=LabelRegistry)
+    router_version: str = ROUTER_VERSION
+
+    def __post_init__(self) -> None:
+        if self.backend is None:
+            self.backend = SyntheticBackend()
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, Any]) -> "RouterConfig":
+        """Build from a JSON config: {"router": {...}} (Hermes profile untouched)."""
+        router = obj.get("router", obj) if isinstance(obj, Mapping) else {}
+        unknown = sorted(set(router.keys()) - {"legacy_fallback", "backends", "thresholds", "calibration"})
+        if unknown:
+            raise ValueError("unknown router config field(s): %s" % (unknown,))
+        backends = router.get("backends", {}) or {}
+        openrouter_cfg = (backends.get("openrouter", {}) or {}) if isinstance(backends, Mapping) else {}
+        unknown_b = sorted(set(backends.keys()) - {"openrouter"})
+        if unknown_b:
+            raise ValueError("unknown backend config field(s): %s" % (unknown_b,))
+        openrouter = OpenRouterBackend(
+            enabled=bool(openrouter_cfg.get("enabled", False)),
+            model=str(openrouter_cfg.get("model", "openai/gpt-4o-mini")),
+        )
+        thresholds = (
+            Thresholds.from_dict(router.get("thresholds", {}) or {}) if router.get("thresholds") else Thresholds()
+        )
+        calibration = (
+            CalibrationModel.from_dict(router.get("calibration", {}) or {})
+            if router.get("calibration")
+            else CalibrationModel()
+        )
+        return cls(
+            thresholds=thresholds,
+            calibration=calibration,
+            backend=SyntheticBackend(),
+            openrouter_backend=openrouter,
+            legacy_fallback=bool(router.get("legacy_fallback", False)),
+        )
+
+
+# --------------------------------------------------------------------------
+# Routing
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class RouteResult:
+    decision: RoutingDecision
+    receipt: Dict[str, Any]
+    escalation_code: Optional[str]
+    topic_escalation_code: Optional[str]
+    session_escalation_code: Optional[str]
+    backend_latency_ms: int
+    latency_ms: float
+    transitions: List[str]
+    topic_band: str
+    session_band: Optional[str]
+
+
+def contamination_risk(flags: Sequence[str]) -> float:
+    """K_j = 1 - prod(1 - k_j) over the session's contamination flags."""
+    survival = 1.0
+    for flag in flags:
+        survival *= 1.0 - CONTAMINATION_WEIGHTS[flag]
+    return 1.0 - survival
+
+
+def _rank(scores: Mapping[str, float]) -> List[Tuple[str, float]]:
+    # deterministic: score desc, then candidate id asc
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def route(
+    request: ClassificationRequest,
+    candidates: CandidateSet,
+    config: RouterConfig,
+    include_session: bool = True,
+    receipt_id: Optional[str] = None,
+    ts: Optional[str] = None,
+) -> RouteResult:
+    started = time.perf_counter()
+    thresholds = config.thresholds
+    calibration = config.calibration
+    registry = config.label_registry
+    registry.observe(candidates)
+
+    receipt_id = receipt_id or str(uuid.uuid4())
+    ts = ts or _utc_now()
+    transitions: List[str] = []
+
+    handle = RequestHandle(
+        request_id=request.request_id,
+        prompt_hash=request.prompt_hash,
+        project_id_hash=request.project_id_hash,
+        config_rev=request.config_rev,
+        context_hash=request.context_hash,
+    )
+
+    topic_scores: List[Dict[str, Any]] = []
+    session_scores: List[Dict[str, Any]] = []
+    topic_top: Optional[Dict[str, Any]] = None
+    topic_second: Optional[Dict[str, Any]] = None
+    session_top: Optional[Dict[str, Any]] = None
+    topic_margin = 0.0
+    session_margin = 0.0
+    contamination_score = 0.0
+    token_cost_estimate = 0
+    backend_latency_ns = 0
+    topic_band = "abstain_or_new_session"
+    session_band: Optional[str] = None
+    topic_code: Optional[str] = None
+    session_code: Optional[str] = None
+    decision_value = "new_session"
+    band_value = "abstain_or_new_session"
+
+    # -- explicit directive short-circuit (section 1.1) ---------------------
+    if request.explicit_directive:
+        decision = _decision(
+            request, "fallback_escalate", "escalate", [], [], None, None, 0.0, None, 0.0,
+            thresholds, calibration, 0.0, 0,
+        )
+        receipt = build_receipt(
+            decision, candidates, request, _backend_name(config.backend),
+            int((time.perf_counter() - started) * 1000), receipt_id, ts,
+            escalation_code="explicit_directive", label_state_touched=None,
+            router_version=config.router_version,
+        )
+        return RouteResult(
+            decision, receipt, "explicit_directive", "explicit_directive", None,
+            0, (time.perf_counter() - started) * 1000.0, [], "fallback_escalate", None,
+        )
+
+    # -- topic side: ONE batch call over ALL candidates incl. sentinels -----
+    try:
+        t0 = time.perf_counter_ns()
+        raw_topic = config.backend.batch_score(handle, candidates, "topic")
+        backend_latency_ns += time.perf_counter_ns() - t0
+        calibrated_topic = {
+            row["candidate"]: calibration.calibrate("topic", row["raw"]) for row in raw_topic
+        }
+        topic_scores = [
+            {
+                "candidate": row["candidate"],
+                "raw": float(row["raw"]),
+                "calibrated": calibrated_topic[row["candidate"]],
+            }
+            for row in raw_topic
+        ]
+        ranked_topic = _rank(calibrated_topic)
+        top_candidate, top_cal = ranked_topic[0]
+        topic_top = {"candidate": top_candidate, "calibrated": top_cal}
+        if len(ranked_topic) > 1:
+            second_candidate, second_cal = ranked_topic[1]
+            topic_second = {"candidate": second_candidate, "calibrated": second_cal}
+            topic_margin = top_cal - second_cal
+        topic_band, topic_code = _topic_band(
+            ranked_topic, calibrated_topic, thresholds, calibration.active
+        )
+    except (BackendError, DisabledByPolicy) as exc:
+        topic_code = (
+            "backend_disabled_by_policy" if isinstance(exc, DisabledByPolicy) else "backend_error"
+        )
+        topic_band = "fallback_escalate"
+
+    # -- novelty gate (section 6) ------------------------------------------
+    if (
+        topic_top is not None
+        and topic_top["candidate"] == TOPIC_SENTINEL_NOVEL
+        and topic_band == "automatic"
+    ):
+        accepted = _taxonomy_gate(request, candidates, config, handle)
+        if accepted is None:
+            topic_band = "fallback_escalate"
+            topic_code = topic_code or "taxonomy_rejected"
+            if isinstance(config.openrouter_backend, OpenRouterBackend) and not config.openrouter_backend.enabled:
+                topic_code = "backend_disabled_by_policy"
+        else:
+            transitions.append(registry.create_provisional(accepted["slug"]))
+
+    # -- session side: ONE batch call over ALL candidates incl. new_session -
+    #     Session comparison is in scope only when a live session exists; with
+    #     zero session candidates there is nothing to reuse, so the topic side
+    #     stands alone (leo-arch.md section 3: "only when reuse is contemplated").
+    if include_session and candidates.sessions:
+        try:
+            t0 = time.perf_counter_ns()
+            raw_session = config.backend.batch_score(handle, candidates, "session")
+            backend_latency_ns += time.perf_counter_ns() - t0
+            session_scores, session_risks, session_top, session_margin, contamination_score = _session_utility(
+                raw_session, candidates, calibration, thresholds
+            )
+            session_band, session_code = _session_band(
+                session_scores, session_risks, session_top, session_margin, thresholds, calibration.active
+            )
+        except (BackendError, DisabledByPolicy) as exc:
+            session_code = (
+                "backend_disabled_by_policy" if isinstance(exc, DisabledByPolicy) else "backend_error"
+            )
+            session_band = "abstain_or_new_session"
+
+    # -- effective band = the more conservative of the two ------------------
+    if session_band is None:
+        band_value, code = topic_band, topic_code
+    elif BAND_ORDER[session_band] > BAND_ORDER[topic_band]:
+        band_value, code = session_band, session_code
+    elif BAND_ORDER[session_band] < BAND_ORDER[topic_band]:
+        band_value, code = topic_band, topic_code
+    else:
+        band_value, code = topic_band, topic_code or session_code
+
+    # -- decision ----------------------------------------------------------
+    if band_value == "automatic":
+        if topic_top and topic_top["candidate"] == TOPIC_SENTINEL_NOVEL:
+            decision_value = "novel_propose"
+        elif session_band == "automatic" and session_top and session_top["candidate"] != SESSION_SENTINEL_NEW:
+            decision_value = "session_reuse"
+            token_cost_estimate = int(
+                candidates.session_index()[session_top["candidate"]].context_token_cost
+            )
+        else:
+            decision_value = "topic_assign"
+    elif band_value == "fallback_escalate":
+        decision_value = "escalate"
+    else:
+        decision_value = "new_session"
+
+    # -- provisional-label corroboration (section 6) ------------------------
+    if topic_top and topic_top["candidate"] not in (TOPIC_SENTINEL_NOVEL, TOPIC_SENTINEL_AMBIGUOUS):
+        session_id = (
+            session_top["candidate"]
+            if session_top and decision_value == "session_reuse"
+            else SESSION_SENTINEL_NEW
+        )
+        transition = registry.register_corroboration(
+            topic_top["candidate"],
+            session_id,
+            request.ts[:10],
+            topic_top["calibrated"],
+            thresholds.tau_topic,
+        )
+        if transition:
+            transitions.append(transition)
+
+    # -- legacy rollback (section 8) ---------------------------------------
+    if config.legacy_fallback:
+        band_value = "fallback_escalate"
+        decision_value = "escalate"
+        code = "legacy_mode"
+
+    decision = _decision(
+        request, band_value, decision_value, topic_scores, session_scores, topic_top,
+        topic_second, topic_margin, session_top, session_margin, thresholds, calibration,
+        contamination_score, token_cost_estimate,
+    )
+    latency_ms = (time.perf_counter() - started) * 1000.0
+    receipt = build_receipt(
+        decision,
+        candidates,
+        request,
+        _backend_name(config.backend),
+        int(backend_latency_ns / 1_000_000),
+        receipt_id,
+        ts,
+        escalation_code=code,
+        label_state_touched=transitions or None,
+        router_version=config.router_version,
+    )
+    return RouteResult(
+        decision=decision,
+        receipt=receipt,
+        escalation_code=code,
+        topic_escalation_code=topic_code,
+        session_escalation_code=session_code,
+        backend_latency_ms=int(backend_latency_ns / 1_000_000),
+        latency_ms=latency_ms,
+        transitions=transitions,
+        topic_band=topic_band,
+        session_band=session_band,
+    )
+
+
+def _utc_now() -> str:
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _backend_name(backend: ClassificationBackend) -> str:
+    name = getattr(backend, "name", "synthetic")
+    return name if name in ("synthetic", "openrouter", "openjev") else "synthetic"
+
+
+def _decision(
+    request: ClassificationRequest,
+    band: str,
+    decision_value: str,
+    topic_scores: List[Dict[str, Any]],
+    session_scores: List[Dict[str, Any]],
+    topic_top: Optional[Dict[str, Any]],
+    topic_second: Optional[Dict[str, Any]],
+    topic_margin: float,
+    session_top: Optional[Dict[str, Any]],
+    session_margin: float,
+    thresholds: Thresholds,
+    calibration: CalibrationModel,
+    contamination_score: float,
+    token_cost_estimate: int,
+) -> RoutingDecision:
+    return RoutingDecision(
+        request_id=request.request_id,
+        band=band,
+        decision=decision_value,
+        topic_scores=topic_scores,
+        session_scores=session_scores,
+        topic_top=topic_top,
+        topic_second=topic_second,
+        topic_margin=topic_margin,
+        session_top=session_top,
+        session_margin=session_margin,
+        thresholds_used=thresholds.to_dict(),
+        calibration_model_id=calibration.model_id,
+        contamination_score=contamination_score,
+        token_cost_estimate=token_cost_estimate,
+    )
+
+
+# --------------------------------------------------------------------------
+# Band policy (leo-arch.md section 3)
+# --------------------------------------------------------------------------
+
+
+def _topic_band(
+    ranked: List[Tuple[str, float]],
+    calibrated: Mapping[str, float],
+    thresholds: Thresholds,
+    calibration_active: bool,
+) -> Tuple[str, Optional[str]]:
+    top_candidate, top_cal = ranked[0]
+    second_candidate = ranked[1][0] if len(ranked) > 1 else None
+    margin = top_cal - ranked[1][1] if len(ranked) > 1 else 1.0
+    cal_ambiguous = calibrated.get(TOPIC_SENTINEL_AMBIGUOUS, 0.0)
+
+    if not calibration_active:
+        band = "abstain_or_new_session" if top_cal < thresholds.tau_low else "fallback_escalate"
+        return band, "calibration_missing"
+
+    if TOPIC_SENTINEL_AMBIGUOUS in (top_candidate, second_candidate) and cal_ambiguous >= 0.40:
+        return "fallback_escalate", "ambiguous_won"
+
+    if top_candidate == TOPIC_SENTINEL_NOVEL:
+        if top_cal >= thresholds.tau_novel and margin >= thresholds.mu_novel:
+            return "automatic", None
+        if top_cal < thresholds.tau_novel:
+            return "fallback_escalate", "novel_below_threshold"
+        return "fallback_escalate", "below_margin"
+
+    if top_cal < thresholds.tau_low:
+        return "abstain_or_new_session", "below_min_score"
+    if top_cal >= thresholds.tau_topic and margin >= thresholds.mu_topic:
+        return "automatic", None
+    if top_cal >= thresholds.tau_topic:
+        return "fallback_escalate", "below_margin"
+    return "fallback_escalate", "below_min_score"
+
+
+def _session_utility(
+    raw_session: List[Dict[str, Any]],
+    candidates: CandidateSet,
+    calibration: CalibrationModel,
+    thresholds: Thresholds,
+) -> Tuple[List[Dict[str, Any]], Dict[str, float], Optional[Dict[str, Any]], float, float]:
+    sessions = candidates.session_index()
+    rows: List[Dict[str, Any]] = []
+    risks: Dict[str, float] = {}
+    for row in raw_session:
+        candidate = row["candidate"]
+        calibrated = calibration.calibrate("session", row["raw"])
+        if candidate == SESSION_SENTINEL_NEW:
+            utility = thresholds.new_session_utility
+            risk = 0.0
+        else:
+            session = sessions[candidate]
+            cost_term = min(1.0, session.context_token_cost / float(thresholds.context_cost_norm))
+            risk = contamination_risk(session.contamination_flags)
+            utility = calibrated - thresholds.w_cost * cost_term - thresholds.w_contam * risk
+        rows.append(
+            {
+                "candidate": candidate,
+                "raw": float(row["raw"]),
+                "calibrated": calibrated,
+                "utility": utility,
+            }
+        )
+        risks[candidate] = risk
+
+    ranked = sorted(rows, key=lambda item: (-item["utility"], item["candidate"]))
+    top = ranked[0]
+    new_row = next((r for r in rows if r["candidate"] == SESSION_SENTINEL_NEW), None)
+    second_reuse = next((r for r in ranked[1:] if r["candidate"] != SESSION_SENTINEL_NEW), None)
+    reference = max([r["utility"] for r in (new_row, second_reuse) if r is not None] or [0.0])
+    margin = top["utility"] - reference
+    # contamination_score: risk of the real session with the highest similarity
+    real_rows = [r for r in rows if r["candidate"] != SESSION_SENTINEL_NEW]
+    contamination_score = (
+        risks[max(real_rows, key=lambda r: (r["calibrated"], r["candidate"]))["candidate"]]
+        if real_rows
+        else 0.0
+    )
+    return rows, risks, {"candidate": top["candidate"], "utility": top["utility"]}, margin, contamination_score
+
+
+def _session_band(
+    session_scores: List[Dict[str, Any]],
+    risks: Mapping[str, float],
+    session_top: Optional[Dict[str, Any]],
+    session_margin: float,
+    thresholds: Thresholds,
+    calibration_active: bool,
+) -> Tuple[str, Optional[str]]:
+    if not session_scores or session_top is None:
+        return "abstain_or_new_session", "new_session_argmax"
+    if not calibration_active:
+        return "abstain_or_new_session", "calibration_missing"
+
+    by_id = {row["candidate"]: row for row in session_scores}
+    top = by_id[session_top["candidate"]]
+    if top["candidate"] == SESSION_SENTINEL_NEW:
+        return "abstain_or_new_session", "new_session_argmax"
+
+    sessions = [row for row in session_scores if row["candidate"] != SESSION_SENTINEL_NEW]
+    real_top = max(sessions, key=lambda r: (r["calibrated"], r["candidate"])) if sessions else None
+    risk = float(risks.get(real_top["candidate"], 0.0)) if real_top else 0.0
+    if risk >= thresholds.k_block:
+        return "abstain_or_new_session", "contamination_high"
+    if top["calibrated"] < thresholds.tau_sess_sim:
+        return "abstain_or_new_session", "below_min_score"
+    if top["utility"] < thresholds.tau_sess_util:
+        return "abstain_or_new_session", "below_min_utility"
+    if session_margin < thresholds.mu_sess:
+        return "abstain_or_new_session", "below_margin"
+    return "automatic", None
+
+
+# --------------------------------------------------------------------------
+# Novelty gate (leo-arch.md section 6)
+# --------------------------------------------------------------------------
+
+
+def _taxonomy_gate(
+    request: ClassificationRequest,
+    candidates: CandidateSet,
+    config: RouterConfig,
+    handle: RequestHandle,
+) -> Optional[Dict[str, Any]]:
+    backend = config.openrouter_backend
+    if backend is None:
+        return None
+    try:
+        return backend.propose_taxonomy(handle, [request.prompt_hash])
+    except (DisabledByPolicy, BackendError):
+        return None

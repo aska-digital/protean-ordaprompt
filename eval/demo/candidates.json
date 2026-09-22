@@ -1,0 +1,59 @@
+{
+ "request_id": "0f0f0f0f-0000-4000-8000-000000000005",
+ "schema": "ordapilot.candidate_set/1",
+ "session_sentinels": [
+  "new_session"
+ ],
+ "sessions": [
+  {
+   "contamination_flags": [],
+   "context_token_cost": 400,
+   "idle_days": 1,
+   "project_id_hash": "sha256:e868a65f739d665238d639ac1fa4fb17530c95e0c298cdc0da43275a5df0c860",
+   "session_id": "sess-case-0005-a"
+  },
+  {
+   "contamination_flags": [],
+   "context_token_cost": 300,
+   "idle_days": 4,
+   "project_id_hash": "sha256:e868a65f739d665238d639ac1fa4fb17530c95e0c298cdc0da43275a5df0c860",
+   "session_id": "sess-case-0005-b"
+  }
+ ],
+ "topic_sentinels": [
+  "novel",
+  "ambiguous"
+ ],
+ "topics": [
+  {
+   "evidence_count": 3,
+   "label_age_days": 5,
+   "label_state": "promoted",
+   "topic_id": "topic-search-index"
+  },
+  {
+   "evidence_count": 4,
+   "label_age_days": 6,
+   "label_state": "promoted",
+   "topic_id": "topic-auth"
+  },
+  {
+   "evidence_count": 5,
+   "label_age_days": 7,
+   "label_state": "promoted",
+   "topic_id": "topic-billing"
+  },
+  {
+   "evidence_count": 6,
+   "label_age_days": 8,
+   "label_state": "promoted",
+   "topic_id": "topic-ci-pipeline"
+  },
+  {
+   "evidence_count": 7,
+   "label_age_days": 9,
+   "label_state": "promoted",
+   "topic_id": "topic-db-migration"
+  }
+ ]
+}
