@@ -9,7 +9,7 @@ description: "Jev-style comparative classifier for OrdaPilot. It compares all to
 author: ahrazzle
 license: MIT
 homepage: https://github.com/aska-digital/protean-ordaprompt
-tags: [router, classification, privacy, fail-closed, cli, eval]
+tags: [router, classification, jev, openjev, nli, session-routing, privacy, fail-closed, cli, eval]
 python_dependencies: []
 provides_tools: []
 provides_hooks: []
