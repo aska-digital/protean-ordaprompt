@@ -126,6 +126,18 @@ def _emit(decision: Dict[str, Any], receipt: Dict[str, Any], pretty: bool) -> No
 
 
 def _run(args: argparse.Namespace) -> int:
+    # I-5: --profiles and --candidates are mutually exclusive.  Refuse the
+    # combination HERE, before any file is read, any transport is constructed,
+    # or anything is routed or written -- never a silent downgrade where one
+    # source quietly wins over the other.
+    if args.candidates and args.profiles:
+        print(
+            "profiles_with_candidates_refused: --profiles and --candidates "
+            "are mutually exclusive; pass exactly one candidate source "
+            "(a --candidates file, or inline --topics/--sessions/--profiles)",
+            file=sys.stderr,
+        )
+        return 2
     try:
         request = ClassificationRequest.from_dict(_load_json(args.request))
         candidates = _build_candidates(args, request)
@@ -171,13 +183,14 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         child = sub.add_parser(name, help=help_text)
         child.add_argument("--request", required=True, help="ClassificationRequest JSON file")
-        child.add_argument("--candidates", help="CandidateSet JSON file")
+        child.add_argument("--candidates", help="CandidateSet JSON file (mutually exclusive with --profiles: passing both is exit 2, profiles_with_candidates_refused)")
         child.add_argument("--topics", help="comma-separated topic slugs (when --candidates is absent)")
         child.add_argument("--sessions", help="comma-separated session ids (when --candidates is absent)")
         child.add_argument(
             "--profiles",
             help="comma-separated eligible profile ids for the `profile` surface "
-            "(when --candidates is absent); the no_suitable_profile abstain candidate is "
+            "(when --candidates is absent; mutually exclusive with --candidates: "
+            "passing both is exit 2, profiles_with_candidates_refused); the no_suitable_profile abstain candidate is "
             "always added, and the order given here is the order scored",
         )
         child.add_argument(

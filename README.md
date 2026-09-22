@@ -179,6 +179,7 @@ to install. The catalog entry declares `platforms: []` (all platforms).
 | Row's `batch_max_candidates` above its family cap | exit code 2, `field_invalid`, nothing routed or written |
 | Request `--data-class` is tighter than the row's declared class | exit code 2, `data_class_refused`, nothing routed or written, no socket opened |
 | Selected row does not declare the requested surface | exit code 2, `surface_unavailable`, nothing routed, no socket opened |
+| `--profiles` passed together with `--candidates` | exit code 2, `profiles_with_candidates_refused`, nothing routed or written, no socket opened |
 | Calibration inconsistent (`model_id: "none"` with `active: true`) | exit code 2, `calibration_state_invalid`, nothing routed or written |
 | Active calibration fitted for a different provider key | exit code 2, `calibration_key_mismatch`, nothing routed or written |
 | Provider reply violates the batch contract | hard error, router abstains, no retry, no silent fallback |
@@ -213,6 +214,11 @@ routing outcomes are `confirm`, `abstain`, or `abstain_or_new_session` — never
   designed follow-ups. Profile routing *is* reachable today as a compared surface through the
   caller's candidate set (all eligible profiles plus the `no_suitable_profile` abstain
   option, one batch, same gates).
+
+  `--profiles` and `--candidates` are mutually exclusive candidate sources: passing both
+  to the same invocation is a hard error (exit 2, `profiles_with_candidates_refused` on
+  stderr) with nothing routed, nothing written, and no socket opened. Pass a `--candidates`
+  file, or inline `--topics`/`--sessions`/`--profiles` — never both at once.
 
 ## Evaluation
 
