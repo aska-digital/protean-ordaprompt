@@ -7,16 +7,20 @@ never accepts provider paths, credentials, receipts paths, or arbitrary code.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from ordaprompt_router.router import route, RouterConfig
 from ordaprompt_router.schemas import CandidateSet, ClassificationRequest, SchemaError
 
 router = APIRouter()
-_ROOT = Path(__file__).resolve().parents[1]
 _MAX_JSON_CHARS = 200_000
 
 
