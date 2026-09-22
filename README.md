@@ -1,7 +1,7 @@
 # protean-ordaprompt
 
-Fail-closed three-band classifier router for OrdaPilot request routing — a bounded,
-locked slice of the LOCKED leo-arch spec (schemas 1.1–1.4, batch-compare adapter,
+Fail-closed three-band classifier router for OrdaPilot request routing — a bounded
+slice of the locked leo-arch spec (schemas 1.1–1.4, batch-compare adapter,
 three-band policy, session-utility gating, hashes-only receipts, calibration plan).
 
 Hermes Agent plugin. Installable via the curated plugin catalog entry
@@ -92,10 +92,11 @@ reports why; it never guesses.
 
 The automatic band is LOCKED until calibration unlock criteria pass **on real feedback
 data**: expected calibration error (ECE) ≤ 0.05 per surface. The synthetic harness
-honestly reports ECE 0.133 (topic) / 0.064 (session) — above the gate — so production
+honestly reports ECE 0.1330 (topic) / 0.0635 (session) — above the gate — so production
 ships `calibration_model_id="none"`, active=false, and the harness prints
 `calibration unlocked=False production_model=none`. Until real-data calibration passes,
-routing outcomes are `confirm` or `abstain` only.
+routing outcomes are `confirm`, `abstain`, or `abstain_or_new_session` — never
+`automatic`.
 
 ## Evaluation
 
