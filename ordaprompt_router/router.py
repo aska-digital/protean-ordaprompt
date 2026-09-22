@@ -406,6 +406,7 @@ def route(
             int((time.perf_counter() - started) * 1000), receipt_id, ts,
             escalation_code="explicit_directive", label_state_touched=None,
             router_version=config.router_version,
+            fallback_from=_fallback_source(config.backend),
         )
         return RouteResult(
             decision, receipt, "explicit_directive", "explicit_directive", None,
@@ -546,6 +547,7 @@ def route(
         escalation_code=code,
         label_state_touched=transitions or None,
         router_version=config.router_version,
+        fallback_from=_fallback_source(config.backend),
     )
     return RouteResult(
         decision=decision,
@@ -570,6 +572,17 @@ def _utc_now() -> str:
 def _backend_name(backend: ClassificationBackend) -> str:
     name = getattr(backend, "name", "synthetic")
     return name if name in ("synthetic", "openrouter", "openjev") else "synthetic"
+
+
+def _fallback_source(backend: Any) -> Optional[str]:
+    """The provider id a declared fallback chain fell back FROM, or None (D3).
+
+    Read straight off the backend (``ProviderChainBackend`` sets it only when a
+    fallback fires); every other backend yields None, so the local-only path never
+    gains the receipt field.
+    """
+    value = getattr(backend, "last_fallback_from", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _decision(

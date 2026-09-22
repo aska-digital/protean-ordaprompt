@@ -609,6 +609,10 @@ RECEIPT_FIELDS = (
     "backend_latency_ms",
     "label_state_touched",
     "escalation_code",
+    # Optional, provider-lane additive field (D3): present ONLY when an
+    # operator-declared fallback chain fired; absent on the default path, so
+    # local-only receipts stay byte-identical to the earlier release.
+    "fallback_from",
 )
 
 ROUTER_VERSION = "1.0.0"
@@ -638,9 +642,15 @@ def build_receipt(
     escalation_code: Optional[str] = None,
     label_state_touched: Optional[Sequence[str]] = None,
     router_version: str = ROUTER_VERSION,
+    fallback_from: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Assemble a receipt dict from enumerated fields only (leo-arch.md 1.4)."""
-    return {
+    """Assemble a receipt dict from enumerated fields only (leo-arch.md 1.4).
+
+    ``fallback_from`` (locked decision D3 of the provider lane) is emitted ONLY
+    when an operator-declared fallback chain actually fired, so a receipt from the
+    local-only path keeps exactly the original field set.
+    """
+    receipt = {
         "schema": SCHEMA_RECEIPT,
         "receipt_id": receipt_id,
         "ts": ts,
@@ -666,6 +676,9 @@ def build_receipt(
         "label_state_touched": list(label_state_touched) if label_state_touched else None,
         "escalation_code": escalation_code,
     }
+    if fallback_from is not None:
+        receipt["fallback_from"] = fallback_from
+    return receipt
 
 
 def validate_receipt(obj: Any) -> Dict[str, Any]:
@@ -717,4 +730,11 @@ def validate_receipt(obj: Any) -> Dict[str, Any]:
     code = data.get("escalation_code")
     if code is not None:
         _enum(data, "escalation_code", ESCALATION_CODES, path)
+    fallback_from = data.get("fallback_from")
+    if fallback_from is not None:
+        _need(
+            is_id_token(fallback_from),
+            path + ".fallback_from",
+            "expected a provider id token or null",
+        )
     return data

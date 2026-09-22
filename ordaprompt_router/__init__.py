@@ -5,9 +5,12 @@ Package layout
     adapter.py   ClassificationBackend + SyntheticBackend + gated OpenRouter (section 2)
     router.py    batch comparison, three-band policy, session utility, labels (sections 3, 5, 6)
     receipts.py  append-only, hashes-only receipt store (sections 1.4, 4)
+    providers.py operator-supplied provider registry + OpenAI-compatible adapter
     cli.py       `python3 -m ordaprompt_router.cli classify|route-session`
 
-Stdlib only.  No network.  No Hermes core or profile-config changes.
+Stdlib only.  No network unless an operator supplies a providers file with
+`--providers` and selects a provider row that requires network.  No Hermes core or
+profile-config changes.
 """
 
 from __future__ import annotations
@@ -21,6 +24,20 @@ from .adapter import (
     SyntheticBackend,
     canonicalize_redacted,
     sha256_hex,
+)
+from .providers import (
+    OpenAICompatibleBackend,
+    ProviderChainBackend,
+    ProviderConfigError,
+    ProviderContractError,
+    ProviderError,
+    ProviderRegistry,
+    ProviderRow,
+    ProviderTransportError,
+    Transport,
+    TransportRequest,
+    TransportResponse,
+    stdlib_transport,
 )
 from .receipts import ReceiptStore, assert_no_free_text
 from .router import (
@@ -47,8 +64,16 @@ __all__ = [
     "ClassificationRequest",
     "DisabledByPolicy",
     "LabelRegistry",
+    "OpenAICompatibleBackend",
     "OpenRouterBackend",
     "PrivacyViolationError",
+    "ProviderChainBackend",
+    "ProviderConfigError",
+    "ProviderContractError",
+    "ProviderError",
+    "ProviderRegistry",
+    "ProviderRow",
+    "ProviderTransportError",
     "ReceiptStore",
     "RequestHandle",
     "RouteResult",
@@ -57,10 +82,14 @@ __all__ = [
     "SchemaError",
     "SyntheticBackend",
     "Thresholds",
+    "Transport",
+    "TransportRequest",
+    "TransportResponse",
     "assert_no_free_text",
     "canonicalize_redacted",
     "route",
     "sha256_hex",
+    "stdlib_transport",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

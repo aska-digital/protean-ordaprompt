@@ -37,8 +37,10 @@ topic but is contaminated (different project hash) or near-tied never routes aut
 
 ## Privacy disclosure
 
-- **No telemetry, no network, no background work.** The package is Python stdlib only.
-  The CLI runs once per invocation and exits.
+- **No telemetry, no background work.** The package is Python stdlib only; the CLI runs
+  once per invocation and exits. **No network by default**: an external provider is
+  contacted only when an operator explicitly passes `--providers <path>` and that file
+  selects a provider row that requires network (see *Configuring a provider*).
 - **The optional OpenRouter backend ships DISABLED by policy** (`DisabledByPolicy` is
   raised if anything tries to use it while disabled; even when enabled, batch scoring is
   gated off — the adapter permits only taxonomy proposals). Even when an operator
@@ -73,8 +75,62 @@ disabled and the automatic band locked. Optional, explicit, per-invocation JSON:
 - `--config router-config.json` — thresholds, legacy fallback, backend declaration.
 - `--calibration calibration.json` — a `CalibrationModel` document; shipping
   `eval/calibration.json` records the **locked** state (`model_id: "none"`, active false).
+- `--providers providers.json` — opt in to an operator-supplied provider configuration
+  (see below). Without the flag no provider code is constructed.
 - `--enable-openrouter` — explicitly enables the (hashes-only) OpenRouter backend for
   that invocation. Default OFF everywhere.
+
+## Configuring a provider
+
+With no flag the router uses the local deterministic adapter only and results are
+byte-identical to release 1.0.0. To connect an external OpenAI-compatible classifier
+(a "Jev-style" endpoint row), pass one operator-supplied JSON file explicitly:
+
+    python3 -m ordaprompt_router.cli classify --request req.json --providers providers.json
+
+    {
+      "schema_version": 1,
+      "providers": [
+        {
+          "id": "jev",
+          "kind": "openai_compatible",
+          "base_url": "https://provider.example.com/v1",
+          "model": "jev-classifier-1",
+          "api_key_env": "ORDAPROMPT_PROVIDER_KEY"
+        }
+      ]
+    }
+
+Row fields: `id`, `kind` (`local` | `openai_compatible`), `base_url`, `model`,
+`api_key_env`, `allow_private_network`, `timeout_s`, `max_retries`, `max_tokens`,
+`batch_max_candidates`, `supports_taxonomy_proposal`. Optional top-level fields:
+`default_provider`, `allow_fallback`.
+
+- **Credential names only.** The file carries the environment variable NAME
+  (`api_key_env`); the value is read from the environment at call time. No key value,
+  prefix, length or request header is ever written to a config file, receipt, log, error
+  message or stdout. A literal key field in the file is rejected as an unknown field.
+- **SSRF boundary.** The request URL is built from `base_url` only — never from model
+  output, never from an environment variable. Redirects are disabled. `https` is
+  required; plain `http` is refused unless the row sets `allow_private_network: true`
+  *and* the host is loopback/private. Any other target is refused before a socket is
+  opened.
+- **Batch contract.** One `POST {base_url}/chat/completions` per surface, payload
+  hashes/ids only. The reply must be JSON covering *exactly* the candidate id set with
+  finite numeric scores in `[0, 1]`; missing, extra, duplicate or unknown ids, non-numeric
+  or boolean scores, NaN/inf and out-of-range values are each a hard error. Raw provider
+  scores then flow through the existing calibration/threshold/band path unchanged — there
+  are no provider-specific thresholds and a provider change is not a calibration unlock.
+- **Fail closed.** Unknown or duplicate provider id, an unset `api_key_env` value, an
+  unparsable file, or a violating reply is a structured hard error and the router
+  abstains. There is **no silent fallback**: a fallback chain must be declared explicitly
+  (`allow_fallback: true` plus `default_provider`) and every fallback that fires is
+  recorded in the receipt as the distinct `fallback_from` field. Credential, contract and
+  configuration failures never fall back.
+- **`propose_taxonomy` is refused** unless the row explicitly sets
+  `supports_taxonomy_proposal: true`.
+- A `jev` row is just an OpenAI-compatible endpoint row. This release bundles no model
+  and does not claim that any live Jev integration was tested.
 
 ## Supported platforms
 
@@ -92,6 +148,9 @@ to install. The catalog entry declares `platforms: []` (all platforms).
 | Contaminated session (project hash mismatch) | session never promoted |
 | Receipt fails privacy/schema validation | exit code 3, receipt rejected, nothing written |
 | Any unexpected backend error | `BackendError`; the decision is `abstain`, not a guess |
+| Providers file unusable (unparsable, unknown/duplicate id, refused host, unset env key) | exit code 2, structured code on stderr, nothing routed or written, no socket opened |
+| Provider reply violates the batch contract | hard error, router abstains, no retry, no silent fallback |
+| Declared fallback chain fires | recorded as `fallback_from` in the receipt (scores are never silently substituted) |
 
 The rule is uniform: when the router cannot prove the safe choice, it abstains and
 reports why; it never guesses.
@@ -122,7 +181,7 @@ automatic band stays locked.
 
 ## Layout
 
-    ordaprompt_router/   the package (schemas, adapter, router, receipts, cli)
+    ordaprompt_router/   the package (schemas, adapter, router, receipts, providers, cli)
     eval/                offline harness, fixture generator, negative probes, calibration
-    test/                unittest smoke tests
+    test/                unittest smoke tests + offline provider tests
     plugin.yaml          Hermes plugin manifest (manifest_version 1, api_version 1)

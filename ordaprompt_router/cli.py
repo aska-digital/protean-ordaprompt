@@ -4,6 +4,11 @@
     python3 -m ordaprompt_router.cli route-session --request req.json [--candidates c.json] \
                                                    --receipts-dir receipts/
 
+`--providers <path>` opts in to an operator-supplied provider configuration; without
+the flag no provider code is constructed and the local deterministic adapter stands
+alone.  A providers file that cannot be trusted is a structured hard error: exit 2,
+nothing routed, nothing written, no socket opened.
+
 Prints the RoutingDecision and the RoutingReceipt as JSON.  Exit codes:
     0  routing produced (receipt written when --receipts-dir is given)
     2  usage / schema validation failure (fail-closed, nothing written)
@@ -19,6 +24,7 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence
 
 from .adapter import sha256_hex
+from .providers import ProviderConfigError
 from .receipts import ReceiptStore
 from .router import CalibrationModel, RouterConfig, route
 from .schemas import (
@@ -59,6 +65,13 @@ def _build_config(args: argparse.Namespace) -> RouterConfig:
         config = RouterConfig()
     if args.calibration:
         config.calibration = CalibrationModel.from_dict(_load_json(args.calibration))
+    if args.providers:
+        # D2: the ONLY way a provider enters the decision path.  No provider file ->
+        # no provider code runs at all; the local deterministic adapter stands alone.
+        from .providers import ProviderRegistry
+
+        registry = ProviderRegistry.from_file(args.providers)
+        config.backend = registry.select_backend()
     if args.enable_openrouter:
         from .adapter import OpenRouterBackend
 
@@ -92,7 +105,13 @@ def _run(args: argparse.Namespace) -> int:
         print("input_error: %s" % exc, file=sys.stderr)
         return 2
 
-    config = _build_config(args)
+    try:
+        config = _build_config(args)
+    except ProviderConfigError as exc:
+        # D3: a provider file that cannot be trusted is a structured hard error.
+        # Nothing is routed, nothing is written, and no socket is opened.
+        print("provider_reject: %s" % exc, file=sys.stderr)
+        return 2
     result = route(
         request,
         candidates,
@@ -127,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--receipts-dir", help="append-only receipt directory")
         child.add_argument("--calibration", help="calibration model JSON (default: none -> nothing automatic)")
         child.add_argument("--config", help="router config JSON: router.backends.openrouter.enabled, legacy_fallback")
+        child.add_argument("--providers", help="operator-supplied providers JSON (default: none -> local deterministic adapter only)")
         child.add_argument("--enable-openrouter", action="store_true", help="explicitly enable the gated adapter (default off)")
         child.add_argument("--legacy-fallback", action="store_true", help="section 8 rollback: escalate everything")
         child.add_argument("--compact", dest="pretty", action="store_false", help="single-line JSON")

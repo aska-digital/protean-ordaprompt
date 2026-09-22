@@ -12,7 +12,7 @@ lazily so this module stays importable on a bare interpreter.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 PLUGIN_NAME = "protean-ordaprompt"
 

@@ -1,5 +1,5 @@
 name: protean-ordaprompt
-version: 1.0.0
+version: 1.1.0
 # manifest_version stays at 1: the installer on Hermes 0.21.x refuses anything
 # above its own _SUPPORTED_MANIFEST_VERSION. All v2 fields (api_version, config_schema,
 # python_dependencies, license, homepage, tags) are additive and read regardless.
