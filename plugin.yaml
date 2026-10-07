@@ -8,7 +8,7 @@ api_version: 1
 description: "Jev-style comparative classifier for OrdaPilot. It compares all topic labels and session choices in one batch, including new-topic, ambiguous, and new-session options. It uses calibrated score and margin gates, weighs continuity against context cost and contamination, and abstains when uncertain. OpenRouter is optional for provisional new-label proposals and is disabled by default."
 author: ahrazzle
 license: MIT
-homepage: https://github.com/aska-digital/protean-ordaprompt
+homepage: https://aska-digital.github.io/protean-ordaprompt/
 tags: [router, classification, jev, openjev, nli, session-routing, privacy, fail-closed, cli, eval]
 python_dependencies: []
 provides_tools: []
