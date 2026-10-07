@@ -919,14 +919,14 @@ def self_test(fixtures_dir: str, cases_total: int) -> int:
     )
     on_disk = json.loads(body)
     # `total` is an input to the generator (it sets the tuning/holdout boundary),
-    # so the prefix must be regenerated with the SAME total as the on-disk file.
+    # so every case must be regenerated with the SAME total as the on-disk file.
     # Scores are compared with tolerance: math.tanh's last-ulp rounding differs
     # between libm builds, so byte-identical regeneration is not portable.
-    prefix = [fg.build_case(i, len(on_disk)) for i in range(min(52, len(on_disk)))]
+    regenerated = [fg.build_case(i, len(on_disk)) for i in range(len(on_disk))]
     check(
-        "fixtures.on_disk_prefix_matches_regeneration",
-        len(prefix) <= len(on_disk)
-        and all(_case_matches(a, b) for a, b in zip(on_disk, prefix)),
+        "fixtures.on_disk_matches_regeneration",
+        len(regenerated) == len(on_disk)
+        and all(_case_matches(a, b) for a, b in zip(on_disk, regenerated)),
         "regenerated with total=%d" % len(on_disk),
     )
 

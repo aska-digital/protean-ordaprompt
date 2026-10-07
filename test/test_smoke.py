@@ -92,6 +92,55 @@ class TestCliRoute(unittest.TestCase):
             self.assertEqual(proc.returncode, 2, proc.stderr)
             self.assertEqual(proc.stdout.strip(), "")
 
+    def test_malformed_config_fails_closed(self) -> None:
+        demo = ROOT / "eval" / "demo"
+        bad_configs = (
+            {"router": {"thresholds": {"tau_topic": {"a": 1}}}},
+            {"router": {"thresholds": {"tau_topic": None}}},
+            {"router": {"backends": "nope"}},
+        )
+        for payload in bad_configs:
+            with tempfile.TemporaryDirectory() as tmp:
+                bad = Path(tmp) / "bad-config.json"
+                bad.write_text(json.dumps(payload))
+                proc = subprocess.run(
+                    [
+                        sys.executable, "-m", "ordaprompt_router.cli", "classify",
+                        "--request", str(demo / "request.json"),
+                        "--candidates", str(demo / "candidates.json"),
+                        "--config", str(bad),
+                    ],
+                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+                )
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), "")
+                self.assertIn("config_reject:", proc.stderr)
+
+    def test_non_boolean_calibration_active_fails_closed(self) -> None:
+        demo = ROOT / "eval" / "demo"
+        with tempfile.TemporaryDirectory() as tmp:
+            cal = Path(tmp) / "calibration.json"
+            cal.write_text(json.dumps({"active": "yes"}))
+            proc = subprocess.run(
+                [
+                    sys.executable, "-m", "ordaprompt_router.cli", "classify",
+                    "--request", str(demo / "request.json"),
+                    "--candidates", str(demo / "candidates.json"),
+                    "--calibration", str(cal),
+                ],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "")
+            self.assertIn("config_reject:", proc.stderr)
+
+    def test_slug_domain_rejects_trailing_hyphen(self) -> None:
+        from ordaprompt_router.schemas import SLUG_RE
+
+        self.assertIsNone(SLUG_RE.match("bad-"))
+        self.assertIsNotNone(SLUG_RE.match("good-slug"))
+        self.assertIsNotNone(SLUG_RE.match("a-b"))
+
 
 if __name__ == "__main__":
     unittest.main()

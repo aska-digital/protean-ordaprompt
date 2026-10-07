@@ -69,7 +69,7 @@ CONTAMINATION_WEIGHTS = {
 # --------------------------------------------------------------------------
 
 HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
 UUID4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )

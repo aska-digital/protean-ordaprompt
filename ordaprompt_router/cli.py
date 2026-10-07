@@ -94,7 +94,7 @@ def _run(args: argparse.Namespace) -> int:
 
     try:
         config = _build_config(args)
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         print("config_reject: %s" % exc, file=sys.stderr)
         return 2
 
