@@ -1,5 +1,9 @@
 # protean-ordaprompt
 
+[![Website](https://img.shields.io/badge/website-aska--digital.github.io-blue)](https://aska-digital.github.io/protean-ordaprompt/)
+[![Hermes catalog](https://img.shields.io/badge/hermes--agent-plugin%20catalog-PR%20%23119124-green)](https://github.com/NousResearch/hermes-agent/pull/119124)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Fail-closed Jev-style comparative classifier for OrdaPilot request routing. It is designed
 for Jev/OpenJEV-like NLI backends and compares all topic labels and session choices together,
 including `new topic`, `ambiguous`, and `new session` options. It uses calibrated score and
