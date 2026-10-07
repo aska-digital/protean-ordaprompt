@@ -92,7 +92,12 @@ def _run(args: argparse.Namespace) -> int:
         print("input_error: %s" % exc, file=sys.stderr)
         return 2
 
-    config = _build_config(args)
+    try:
+        config = _build_config(args)
+    except (OSError, ValueError) as exc:
+        print("config_reject: %s" % exc, file=sys.stderr)
+        return 2
+
     result = route(
         request,
         candidates,
