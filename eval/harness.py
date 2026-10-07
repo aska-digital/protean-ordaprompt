@@ -722,6 +722,44 @@ def _small_cases(total: int = 52) -> List[Dict[str, Any]]:
     return fg.generate_cases(total=total)
 
 
+#: Tolerance for regenerated fixture scores. The synthetic backend's scores go
+#: through math.tanh, whose last-ulp rounding differs between libm builds
+#: (macOS vs Linux), so byte-identical regeneration is not portable. 1e-12
+#: absorbs float dust while staying far below any decision threshold (0.20+).
+_FIXTURE_SCORE_TOL = 1e-12
+
+
+def _raw_scores_close(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    if set(a.keys()) != set(b.keys()):
+        return False
+    for surface, scores_a in a.items():
+        scores_b = b[surface]
+        if set(scores_a.keys()) != set(scores_b.keys()):
+            return False
+        for candidate, value_a in scores_a.items():
+            value_b = scores_b[candidate]
+            if not (
+                isinstance(value_a, (int, float))
+                and isinstance(value_b, (int, float))
+                and math.isclose(value_a, value_b, rel_tol=_FIXTURE_SCORE_TOL, abs_tol=_FIXTURE_SCORE_TOL)
+            ):
+                return False
+    return True
+
+
+def _case_matches(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """Same case modulo float dust in the synthetic `raw` scores."""
+    if set(a.keys()) != set(b.keys()):
+        return False
+    for key, value_a in a.items():
+        if key == "raw":
+            if not _raw_scores_close(value_a, b[key]):
+                return False
+        elif value_a != b[key]:
+            return False
+    return True
+
+
 def self_test(fixtures_dir: str, cases_total: int) -> int:
     checks: List[Tuple[str, bool, str]] = []
 
@@ -881,11 +919,14 @@ def self_test(fixtures_dir: str, cases_total: int) -> int:
     )
     on_disk = json.loads(body)
     # `total` is an input to the generator (it sets the tuning/holdout boundary),
-    # so the prefix must be regenerated with the SAME total as the on-disk file.
-    prefix = [fg.build_case(i, len(on_disk)) for i in range(min(52, len(on_disk)))]
+    # so every case must be regenerated with the SAME total as the on-disk file.
+    # Scores are compared with tolerance: math.tanh's last-ulp rounding differs
+    # between libm builds, so byte-identical regeneration is not portable.
+    regenerated = [fg.build_case(i, len(on_disk)) for i in range(len(on_disk))]
     check(
-        "fixtures.on_disk_prefix_matches_regeneration",
-        on_disk[: len(prefix)] == prefix,
+        "fixtures.on_disk_matches_regeneration",
+        len(regenerated) == len(on_disk)
+        and all(_case_matches(a, b) for a, b in zip(on_disk, regenerated)),
         "regenerated with total=%d" % len(on_disk),
     )
 

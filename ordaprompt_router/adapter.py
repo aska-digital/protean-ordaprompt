@@ -28,6 +28,7 @@ from .schemas import (
     SLUG_RE,
     CandidateSet,
     PrivacyViolationError,
+    is_hash,
 )
 
 # --------------------------------------------------------------------------
@@ -355,7 +356,12 @@ class OpenRouterBackend(ClassificationBackend):
         return self.validate_proposal(response)
 
     def validate_proposal(self, response: Any) -> Optional[Dict[str, Any]]:
-        """Accept a proposal only at >= min_confidence with a well-formed slug."""
+        """Accept a proposal only at >= min_confidence with well-formed fields.
+
+        Every string the response contributes is validated against the closed
+        id/hash domains -- a bound transport must not smuggle free text back
+        into the label registry through an unvalidated field.
+        """
         if not isinstance(response, Mapping):
             raise BackendError("proposal response is not an object")
         slug = response.get("slug")
@@ -366,9 +372,17 @@ class OpenRouterBackend(ClassificationBackend):
             return None
         if float(confidence) < self.min_confidence:
             return None
+        parent_slug = response.get("parent_slug")
+        if parent_slug is not None and (
+            not isinstance(parent_slug, str) or not SLUG_RE.match(parent_slug)
+        ):
+            return None
+        display_hash = response.get("display_hash")
+        if display_hash is not None and not is_hash(display_hash):
+            return None
         return {
             "slug": slug,
-            "parent_slug": response.get("parent_slug"),
-            "display_hash": response.get("display_hash"),
+            "parent_slug": parent_slug,
+            "display_hash": display_hash,
             "confidence": float(confidence),
         }

@@ -152,9 +152,12 @@ class CalibrationModel:
 
     @classmethod
     def from_dict(cls, obj: Mapping[str, Any]) -> "CalibrationModel":
+        active = obj.get("active", False)
+        if not isinstance(active, bool):
+            raise ValueError("calibration 'active' must be a boolean")
         return cls(
             model_id=str(obj.get("model_id", "none")),
-            active=bool(obj.get("active", False)),
+            active=active,
             a_topic=float(obj.get("a_topic", 1.0)),
             b_topic=float(obj.get("b_topic", 0.0)),
             a_session=float(obj.get("a_session", 1.0)),
