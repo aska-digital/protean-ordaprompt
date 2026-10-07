@@ -71,7 +71,7 @@ topic but is contaminated (different project hash) or near-tied never routes aut
   plus this self-contained source tree.
 - The routing surface is the CLI only: `python3 -m ordaprompt_router.cli classify` and
   `route-session`. Callers that want automatic routing must wire it themselves — and it
-  will refuse (`abstain`/locked) until the calibration gate below passes.
+  will refuse to route automatically (fallback/locked) until the calibration gate below passes.
 
 ## Required configuration
 
@@ -95,11 +95,11 @@ to install. The catalog entry declares `platforms: []` (all platforms).
 | --- | --- |
 | OpenRouter used while disabled | `DisabledByPolicy` raised; nothing sent, nothing written |
 | Malformed request / candidate set | exit code 2, schema error, nothing written |
-| Sub-threshold score or margin | band `abstain` (never `automatic`) |
+| Sub-threshold score or margin | band `abstain_or_new_session` (never `automatic`) |
 | Ambiguity: topic and session winners disagree | `new_session` sentinel wins; no route |
 | Contaminated session (project hash mismatch) | session never promoted |
 | Receipt fails privacy/schema validation | exit code 3, receipt rejected, nothing written |
-| Any unexpected backend error | `BackendError`; the decision is `abstain`, not a guess |
+| Any unexpected backend error | `BackendError`; the decision is `new_session` (abstain), not a guess |
 
 The rule is uniform: when the router cannot prove the safe choice, it abstains and
 reports why; it never guesses.
@@ -111,7 +111,7 @@ data**: expected calibration error (ECE) ≤ 0.05 per surface. The synthetic har
 honestly reports ECE 0.1330 (topic) / 0.0635 (session) — above the gate — so production
 ships `calibration_model_id="none"`, active=false, and the harness prints
 `calibration unlocked=False production_model=none`. Until real-data calibration passes,
-routing outcomes are `confirm`, `abstain`, or `abstain_or_new_session` — never
+routing outcomes are `fallback_escalate` or `abstain_or_new_session`, never
 `automatic`.
 
 ## Evaluation

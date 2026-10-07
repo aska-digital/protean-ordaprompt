@@ -139,7 +139,7 @@ class SyntheticBackend(ClassificationBackend):
 
     ``raw = 0.5 + 0.5 * tanh(3 * cos(vec(prompt_hash, surface), vec(candidate, surface)))``
     with 16-dimensional hash-derived unit vectors, so the score is a pure
-    function of the prompt hash and the candidate ids (leo-arch.md section 2).
+    function of the prompt hash and the candidate ids.
     The tanh stretch gives the synthetic score a usable dynamic range instead
     of being squeezed near 0.5. Note: last-ulp rounding of tanh differs between
     libm builds, so regenerated scores agree to ~1e-12 across platforms.
