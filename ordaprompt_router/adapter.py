@@ -135,11 +135,14 @@ class ClassificationBackend(ABC):
 
 
 class SyntheticBackend(ClassificationBackend):
-    """Deterministic hash scorer -- byte-identical across runs, zero network.
+    """Deterministic hash scorer -- same inputs give same scores on a platform, zero network.
 
-    ``raw = 0.5 + 0.5 * cos(vec(prompt_hash, surface), vec(candidate, surface))``
-    with 8-dimensional hash-derived unit vectors, so the score is a pure
+    ``raw = 0.5 + 0.5 * tanh(3 * cos(vec(prompt_hash, surface), vec(candidate, surface)))``
+    with 16-dimensional hash-derived unit vectors, so the score is a pure
     function of the prompt hash and the candidate ids (leo-arch.md section 2).
+    The tanh stretch gives the synthetic score a usable dynamic range instead
+    of being squeezed near 0.5. Note: last-ulp rounding of tanh differs between
+    libm builds, so regenerated scores agree to ~1e-12 across platforms.
 
     A ``fixture_table`` mapping ``(prompt_hash, surface) -> {candidate: raw}``
     can be supplied to replay recorded fixture scores verbatim (offline eval);

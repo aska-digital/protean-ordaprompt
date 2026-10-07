@@ -26,15 +26,19 @@ Hermes Agent plugin. Installable via the curated plugin catalog entry
 
 Given a classification request plus a candidate set (topic candidates and session
 candidates), the router makes ONE backend comparison call per surface, scores all
-candidates, and emits a closed-enum RoutingDecision (`automatic`, `confirm`, `abstain`,
-`abstain_or_new_session`) plus a hashes-only RoutingReceipt:
+candidates, and emits a closed-enum verdict — a `band` plus a `decision` — plus a
+hashes-only RoutingReceipt:
 
-- `automatic` — high score AND high margin: route without asking. **LOCKED OFF in this
+- band `automatic` — high score AND high margin: route without asking. **LOCKED OFF in this
   release** (see Calibration below); the band is structurally present but unreachable
   while `calibration_model_id` is `"none"`.
-- `confirm` — in between: the router returns the ranked candidates and the caller asks.
-- `abstain` — low confidence, novelty, ambiguity, or a new-session signal: the router
-  declines to route and says why. Abstention is a first-class outcome, not a failure.
+- band `fallback_escalate` — in between: the router returns the ranked candidates and the
+  caller asks.
+- band `abstain_or_new_session` — low confidence, novelty, ambiguity, or a new-session
+  signal: the router declines to route and says why. Abstention is a first-class outcome,
+  not a failure.
+- `decision` is one of `topic_assign`, `session_reuse`, `novel_propose`, `escalate`,
+  `new_session` — the concrete outcome within the band.
 
 Session-utility reuse is deliberately stricter than topic utility: a session that wins on
 topic but is contaminated (different project hash) or near-tied never routes automatic.
