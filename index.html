@@ -99,7 +99,7 @@ footer a:hover{color:var(--ink)}
   <div class="hero">
     <p class="kicker">Hermes Agent plugin · in the official plugin catalog</p>
     <h1>Request routing that <span class="slash">refuses to guess.</span></h1>
-    <p class="lede"><strong>protean-ordaprompt</strong> is a Jev-style comparative classifier for OrdaPilot request routing. It compares every candidate label and session together in one batch, checks calibrated scores and margins, and returns a routing decision (<strong>automatic, confirm, or abstain</strong>). When it cannot prove the safe choice, it abstains and says why.</p>
+    <p class="lede"><strong>protean-ordaprompt</strong> is a Jev-style comparative classifier for OrdaPilot request routing. It compares every candidate label and session together in one batch, checks calibrated scores and margins, and returns a verdict: a band (<strong>automatic, escalate, or abstain</strong>) and a concrete decision (<strong>assign the topic, reuse the session, propose a new label, escalate, or open a new session</strong>). When it cannot prove the safe choice, it abstains and says why.</p>
     <div class="cta">
       <a class="btn primary" href="#install">Install via Hermes</a>
       <a class="btn" href="https://github.com/aska-digital/protean-ordaprompt">View source</a>
@@ -141,8 +141,8 @@ hermes plugins enable protean-ordaprompt</pre>
       </div>
       <div class="card">
         <p class="tag">RoutingDecision</p>
-        <h3>Closed decision</h3>
-        <p>One of <code>automatic</code>, <code>confirm</code>, <code>abstain</code>, <code>abstain_or_new_session</code>. <code>confirm</code> hands the ranked candidates to the caller to ask. Abstention is a first-class outcome, never an error.</p>
+        <h3>Closed verdict</h3>
+        <p>Two closed enums. <code>band</code> is <code>automatic</code>, <code>fallback_escalate</code>, or <code>abstain_or_new_session</code>. <code>decision</code> is <code>topic_assign</code>, <code>session_reuse</code>, <code>novel_propose</code>, <code>escalate</code>, or <code>new_session</code>. The escalate band hands the ranked candidates to the caller to ask. Abstention is a first-class outcome, never an error.</p>
       </div>
     </div>
     <p style="height:18px"></p>
