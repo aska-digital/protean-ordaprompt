@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>protean-ordaprompt | fail-closed request routing for Hermes</title>
+<meta name="description" content="A Jev-style comparative classifier that routes OrdaPilot requests to topics and sessions. It compares all candidates together, gates on calibrated scores and margins, and abstains when it cannot prove the safe choice. Stdlib only. No network, no telemetry.">
+<meta property="og:title" content="protean-ordaprompt — fail-closed request routing for Hermes">
+<meta property="og:description" content="Comparative classifier for OrdaPilot routing. One comparison per surface, margin gates, abstention as a first-class outcome. In the official Hermes plugin catalog.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://aska-digital.github.io/protean-ordaprompt/">
+<meta property="og:image" content="https://aska-digital.github.io/protean-ordaprompt/og-image.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="protean-ordaprompt — fail-closed request routing for Hermes">
+<meta name="twitter:description" content="Comparative classifier for OrdaPilot routing. One comparison per surface, margin gates, abstention as a first-class outcome. In the official Hermes plugin catalog.">
+<meta name="twitter:image" content="https://aska-digital.github.io/protean-ordaprompt/og-image.jpg">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#0b0e14; --panel:#11161f; --panel2:#151b26; --line:#232b3a;
+  --ink:#e8ecf3; --muted:#9aa5b8; --dim:#6b7488;
+  --accent:#7dd3fc; --accent-dim:#3b82a6; --ok:#7ee8a2; --warn:#ffd479; --bad:#ff9c9c;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 22px}
+header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(8px);z-index:10}
+header.top .wrap{display:flex;align-items:center;gap:18px;padding-top:14px;padding-bottom:14px}
+.brand{font-family:var(--mono);font-size:15px;color:var(--ink);text-decoration:none}
+.brand b{color:var(--accent)}
+nav{margin-left:auto;display:flex;gap:16px;font-size:14px}
+nav a{color:var(--muted);text-decoration:none}
+nav a:hover{color:var(--ink)}
+.hero{padding:72px 0 48px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--accent);text-transform:uppercase;margin:0 0 18px}
+h1{font-size:clamp(34px,6vw,52px);line-height:1.12;margin:0 0 18px;font-weight:650;letter-spacing:-.01em}
+h1 .slash{color:var(--accent)}
+.lede{font-size:19px;color:var(--muted);max-width:640px;margin:0 0 30px}
+.lede strong{color:var(--ink);font-weight:600}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:34px}
+.btn{display:inline-block;padding:11px 20px;border-radius:9px;font-size:15px;font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--ink);background:var(--panel)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#06121a}
+.btn:hover{filter:brightness(1.1)}
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.badge{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:4px 12px;background:var(--panel)}
+.badge .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:6px}
+.badge.warn .dot{background:var(--warn)}
+section{padding:44px 0;border-top:1px solid var(--line)}
+h2{font-size:26px;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}
+h2 .n{font-family:var(--mono);font-size:15px;color:var(--dim);font-weight:400;margin-right:10px}
+.sub{color:var(--muted);margin:0 0 22px;max-width:660px}
+.sub strong{color:var(--ink);font-weight:600}
+.grid{display:grid;gap:14px}
+@media(min-width:700px){.grid.cols3{grid-template-columns:repeat(3,1fr)}.grid.cols2{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+.card h3{margin:0 0 8px;font-size:16px}
+.card p{margin:0;color:var(--muted);font-size:14.5px}
+.card .tag{font-family:var(--mono);font-size:12px;color:var(--accent)}
+pre{background:#080b10;border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13.5px;line-height:1.6;color:#cdd6e4}
+code{font-family:var(--mono);font-size:.92em}
+.cmd{position:relative;margin:0 0 14px}
+.cmd button{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:7px;font-size:12px;padding:5px 10px;cursor:pointer;font-family:var(--mono)}
+.cmd button:hover{color:var(--ink)}
+table{width:100%;border-collapse:collapse;font-size:14.5px;margin:0 0 18px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:12.5px;color:var(--dim);font-weight:500}
+td.m{font-family:var(--mono);font-size:13.5px}
+td .ok{color:var(--ok)} td .warn{color:var(--warn)}
+.note{border-left:3px solid var(--accent-dim);padding:2px 0 2px 16px;color:var(--muted);font-size:14.5px;margin:0 0 18px}
+.note strong{color:var(--ink)}
+ul.tight{margin:0 0 18px;padding-left:20px;color:var(--muted)}
+ul.tight li{margin-bottom:6px}
+ul.tight strong{color:var(--ink);font-weight:600}
+footer{border-top:1px solid var(--line);padding:30px 0 60px;color:var(--dim);font-size:13.5px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+footer a{color:var(--muted);text-decoration:none}
+footer a:hover{color:var(--ink)}
+.spacer{flex:1}
+.kbd-lock{display:inline-block;font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 9px;color:var(--warn)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><b>protean</b>-ordaprompt</a>
+    <nav>
+      <a href="#install">Install</a>
+      <a href="#how">How it works</a>
+      <a href="#failclosed">Fail-closed</a>
+      <a href="#eval">Eval</a>
+      <a href="#source">Source</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap" id="top">
+  <div class="hero">
+    <p class="kicker">Hermes Agent plugin · in the official plugin catalog</p>
+    <h1>Request routing that <span class="slash">refuses to guess.</span></h1>
+    <p class="lede"><strong>protean-ordaprompt</strong> is a Jev-style comparative classifier for OrdaPilot request routing. It compares every candidate label and session together in one batch, checks calibrated scores and margins, and returns a routing decision (<strong>automatic, confirm, or abstain</strong>). When it cannot prove the safe choice, it abstains and says why.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install via Hermes</a>
+      <a class="btn" href="https://github.com/aska-digital/protean-ordaprompt">View source</a>
+      <a class="btn" href="https://github.com/NousResearch/hermes-agent/pull/119124">Catalog PR #119124</a>
+    </div>
+    <div class="badges">
+      <span class="badge"><span class="dot"></span>v1.0.0 · catalog SHA <code>60e89af</code></span>
+      <span class="badge"><span class="dot"></span>stdlib only · zero dependencies</span>
+      <span class="badge"><span class="dot"></span>no network · no telemetry</span>
+      <span class="badge warn"><span class="dot"></span>automatic band locked until calibration</span>
+    </div>
+  </div>
+
+  <section id="install">
+    <h2><span class="n">01</span>Install</h2>
+    <p class="sub">Two ways in. The catalog route pins the exact commit that passed validation.</p>
+    <div class="cmd">
+      <pre>hermes plugins install aska-digital/protean-ordaprompt --ref 60e89af2853072c7801c465f30999f3c6ceb35b2
+hermes plugins enable protean-ordaprompt</pre>
+      <button data-copy>copy</button>
+    </div>
+    <p class="note">The curated catalog entry lives at <code>plugin-catalog/protean-ordaprompt.yaml</code> in <a href="https://github.com/NousResearch/hermes-agent" style="color:var(--accent)">NousResearch/hermes-agent</a> (merged via <a href="https://github.com/NousResearch/hermes-agent/pull/119124" style="color:var(--accent)">PR #119124</a>). Catalog validator: clean, 239 files. Hermes plugin validation: 13/13 checks passed, and <code>hermes plugins doctor</code> passed.</p>
+    <p class="sub" style="margin-bottom:0"><strong>Platforms:</strong> anything running Python 3.11 or newer. The catalog entry declares all platforms. <strong>Configuration:</strong> none required. It runs on defaults with everything locked down, and takes explicit per-invocation JSON only when you pass it.</p>
+  </section>
+
+  <section id="how">
+    <h2><span class="n">02</span>How it works</h2>
+    <p class="sub">One request in, one ranked comparison per surface, one closed decision out. The router asks the backend once per surface, not once per label, and scores every candidate side by side, sentinels included.</p>
+    <div class="grid cols3">
+      <div class="card">
+        <p class="tag">classify</p>
+        <h3>Topic side</h3>
+        <p>Compares all topic labels together, including the <code>novel</code> (new topic) and <code>ambiguous</code> sentinels. Returns a ranked list, a calibrated score, and the top-vs-second margin.</p>
+      </div>
+      <div class="card">
+        <p class="tag">route-session</p>
+        <h3>Session side</h3>
+        <p>Adds a second comparison for session reuse, including the <code>new_session</code> sentinel. Session reuse is deliberately stricter than topic match: continuity is weighed against context cost and contamination risk.</p>
+      </div>
+      <div class="card">
+        <p class="tag">RoutingDecision</p>
+        <h3>Closed decision</h3>
+        <p>One of <code>automatic</code>, <code>confirm</code>, <code>abstain</code>, <code>abstain_or_new_session</code>. <code>confirm</code> hands the ranked candidates to the caller to ask. Abstention is a first-class outcome, never an error.</p>
+      </div>
+    </div>
+    <p style="height:18px"></p>
+    <div class="grid cols2">
+      <div class="card">
+        <h3>What abstains</h3>
+        <p>Low confidence, a weak top-vs-second margin, genuine novelty, topic/session disagreement, or a contaminated session (project hash mismatch). If the topic and session winners disagree, the <code>new_session</code> sentinel wins and nothing routes.</p>
+      </div>
+      <div class="card">
+        <h3>What never happens</h3>
+        <p>No guess on a sub-threshold score. No automatic routing without calibration. No free text in receipts, logs, or metadata, ever. Receipts carry hashes and structured scores only, and a privacy validator re-checks every outbound payload.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span>Try the CLI</h2>
+    <p class="sub">The plugin's only surface is the command line. Demo fixtures ship in <code>eval/demo/</code> so you can run a classification in seconds.</p>
+    <div class="cmd">
+      <pre>git clone https://github.com/aska-digital/protean-ordaprompt
+cd protean-ordaprompt
+python3 -m ordaprompt_router.cli classify \
+  --request eval/demo/request.json \
+  --candidates eval/demo/candidates.json \
+  --receipts-dir receipts/ --compact</pre>
+      <button data-copy>copy</button>
+    </div>
+    <p class="note"><strong>Exit codes are part of the contract:</strong> <code>0</code> decision produced (receipt written when <code>--receipts-dir</code> is given) · <code>2</code> malformed request, nothing written · <code>3</code> receipt failed privacy/schema validation, nothing written. Any unexpected backend error becomes <code>abstain</code>, not a guess.</p>
+    <p class="sub" style="margin-bottom:0">The routing layer ships with a deterministic, offline default adapter. A Jev/OpenJEV-style NLI backend can be attached later through the adapter contract. The plugin does not bundle a model and never starts a server. OpenRouter is an optional adapter reserved for provisional new-label proposals. It ships disabled by policy and carries hashes and labels only when explicitly enabled for one invocation.</p>
+  </section>
+
+  <section id="failclosed">
+    <h2><span class="n">04</span>Fail-closed by design</h2>
+    <p class="sub">The <code>automatic</code> band exists in the code but is <strong>structurally unreachable</strong> in this release. It unlocks only when expected calibration error drops to 0.05 or below on real feedback data.</p>
+    <p class="sub">The synthetic harness honestly reports topic ECE 0.1330 and session ECE 0.0635, above the gate. So the release ships with <span class="kbd-lock">calibration_model_id = "none"</span> and the automatic band locked. The unlock rule is simple: prove it on real data first.</p>
+    <table>
+      <tr><th>Condition</th><th>Behavior</th></tr>
+      <tr><td>OpenRouter used while disabled</td><td class="m"><code>DisabledByPolicy</code> raised. Nothing sent, nothing written</td></tr>
+      <tr><td>Malformed request / candidate set</td><td class="m">exit code 2, schema error, nothing written</td></tr>
+      <tr><td>Sub-threshold score or margin</td><td class="m"><span class="warn">abstain</span>, never automatic</td></tr>
+      <tr><td>Topic and session winners disagree</td><td class="m"><code>new_session</code> sentinel wins. No route</td></tr>
+      <tr><td>Contaminated session (project hash mismatch)</td><td class="m">session never promoted</td></tr>
+      <tr><td>Receipt fails privacy/schema validation</td><td class="m">exit code 3, receipt rejected, nothing written</td></tr>
+      <tr><td>Any unexpected backend error</td><td class="m"><code>BackendError</code>. Decision is <span class="warn">abstain</span>, not a guess</td></tr>
+    </table>
+    <p class="note"><strong>The rule is uniform:</strong> when the router cannot prove the safe choice, it abstains and reports why. The harness prints <code>calibration unlocked=False production_model=none</code> on every run. The locked state is verified, not assumed.</p>
+  </section>
+
+  <section id="eval">
+    <h2><span class="n">05</span>Evaluation</h2>
+    <p class="sub">400 synthetic fixtures (267 tuning / 133 holdout) generated by <code>eval/fixturegen.py</code>. These numbers validate the routing and calibration machinery, not real-world classifier quality. The fixture census covers clean reuse, contamination, near-ties, expensive context, ambiguity, and novelty.</p>
+    <table>
+      <tr><th>Metric</th><th>Holdout</th></tr>
+      <tr><td>Topic accuracy (labelled)</td><td class="m"><span class="ok">1.0000</span> · 103 cases</td></tr>
+      <tr><td>Automatic-band precision</td><td class="m"><span class="ok">1.0000</span> · 61 in-band decisions</td></tr>
+      <tr><td>Session decision accuracy</td><td class="m"><span class="ok">1.0000</span> · 128 labelled cases</td></tr>
+      <tr><td>Session contamination rate</td><td class="m"><span class="ok">0.0000</span> · must be 0</td></tr>
+      <tr><td>Novelty precision / recall</td><td class="m">0.9375 · 16 calls / <span class="ok">1.0000</span></td></tr>
+      <tr><td>Abstention rate</td><td class="m">0.2707 <span style="color:var(--dim)">(0.8496 before calibration, honest about the lock)</span></td></tr>
+      <tr><td>Latency per decision</td><td class="m">mean 0.0533 ms · p95 0.0851 ms</td></tr>
+      <tr><td>Calibration gate (topic ECE / session ECE)</td><td class="m">0.1330 / 0.0635, <span class="warn">above the 0.05 unlock gate. Band stays locked</span></td></tr>
+    </table>
+    <div class="cmd">
+      <pre>python3 eval/harness.py --self-test   # 60 internal checks
+python3 eval/harness.py               # 400 synthetic fixtures
+python3 -m unittest discover -s test -p 'test_*.py' -v</pre>
+      <button data-copy>copy</button>
+    </div>
+    <p class="note">Offline harness: 60/60 self-tests, 400 fixtures, 5/5 negative probes. Isolated install at the exact catalog SHA: install, enable, doctor, 6/6 tests, and live fail-closed routing all passed. Independent fact audit and second-member review: approved.</p>
+  </section>
+
+  <section id="privacy">
+    <h2><span class="n">06</span>Privacy disclosure</h2>
+    <ul class="tight">
+      <li><strong>No telemetry, no network, no background work.</strong> The package is Python stdlib only. The CLI runs once per invocation and exits.</li>
+      <li><strong>The optional OpenRouter backend ships disabled by policy.</strong> <code>DisabledByPolicy</code> is raised if anything tries to use it while disabled. Even when an operator explicitly enables it, the transport carries hashes and labels only. No free text, no prompts, no file contents, no paths.</li>
+      <li><strong>Receipts are hashes plus structured scores only.</strong> Closed fields, closed domains, append-only. The receipt writer refuses free text. No prompt text, user content, or session state is ever serialized into a receipt, log, or catalog metadata.</li>
+      <li><strong>This repository contains only synthetic fixtures</strong> and demo JSON with placeholder IDs. No hosted prompt data, no real session transcripts, no user state.</li>
+    </ul>
+    <p class="note" style="margin-bottom:0"><strong>Capability boundary:</strong> the plugin declares no tools, no hooks, no middleware, no settings (<code>config_schema: {}</code>). It does not hook the session loop, does not read the Hermes profile config, and writes nothing outside the receipts directory you explicitly pass. No Hermes core changes are required or made.</p>
+  </section>
+
+  <section id="source">
+    <h2><span class="n">07</span>Source</h2>
+    <p class="sub">MIT licensed. The full package is four modules plus an offline eval harness. Small enough to read in one sitting.</p>
+    <div class="cmd">
+      <pre>protean-ordaprompt/
+├── plugin.yaml            # manifest: no tools, no hooks, no settings
+├── ordaprompt_router/
+│   ├── router.py          # comparative scoring, margin gates, band logic
+│   ├── adapter.py         # backend contract (deterministic default, OpenRouter gated)
+│   ├── receipts.py        # hashes-only receipts, privacy validator
+│   ├── schemas.py         # closed request/candidate/decision schemas
+│   └── cli.py             # classify / route-session entry points
+├── eval/                  # fixturegen, offline harness, negative probes
+└── test/                  # smoke tests</pre>
+    </div>
+    <div class="cta" style="margin-bottom:0">
+      <a class="btn primary" href="https://github.com/aska-digital/protean-ordaprompt">GitHub repo</a>
+      <a class="btn" href="https://github.com/NousResearch/hermes-agent/pull/119124">Catalog PR #119124</a>
+      <a class="btn" href="https://hermes-agent.nousresearch.com/docs/developer-guide/plugins">Plugin developer guide</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <span><b style="color:var(--muted)">protean-ordaprompt</b> v1.0.0 · MIT · by <a href="https://github.com/aska-digital">aska-digital</a></span>
+      <span class="spacer"></span>
+      <span>In the <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> plugin catalog · built for OrdaPilot</span>
+    </div>
+  </footer>
+</div>
+<script>
+document.querySelectorAll('[data-copy]').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var pre = btn.parentElement.querySelector('pre');
+    navigator.clipboard.writeText(pre.textContent.replace(/\\\n/g,'')).then(function(){
+      btn.textContent = 'copied'; setTimeout(function(){ btn.textContent = 'copy'; }, 1200);
+    });
+  });
+});
+</script>
+</body>
+</html>
