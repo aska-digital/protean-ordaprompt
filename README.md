@@ -4,133 +4,97 @@
 [![Hermes catalog](https://img.shields.io/badge/hermes--agent-plugin%20catalog-PR%20%23119124-green)](https://github.com/NousResearch/hermes-agent/pull/119124)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Fail-closed Jev-style comparative classifier for OrdaPilot request routing. It is designed
-for Jev/OpenJEV-like NLI backends and compares all topic labels and session choices together,
-including `new topic`, `ambiguous`, and `new session` options. It uses calibrated score and
-margin gates, weighs session continuity against context cost and contamination, and abstains
-when uncertain.
+**Routes each OrdaPilot request to the right topic and the right session.** It is a plugin
+for Hermes Agent. Instead of judging one label at a time, it compares every option side
+by side and commits only when the evidence is strong. When the evidence is weak, it says
+so instead of guessing.
 
-This release provides the routing layer and backend adapter boundary. It does not bundle a
-Jev model or start a model server. The default adapter is deterministic and offline; a
-Jev/OpenJEV-like backend can be connected explicitly through the adapter contract. OpenRouter
-is optional and reserved for proposing provisional new labels after a high-confidence novelty
-signal. It is disabled by default.
+## Install
 
-Hermes Agent plugin. Installable via the curated plugin catalog entry
-`plugin-catalog/protean-ordaprompt.yaml` (in the hermes-agent repository) or directly:
+```sh
+hermes plugins install aska-digital/protean-ordaprompt --ref 60e89af2853072c7801c465f30999f3c6ceb35b2
+hermes plugins enable protean-ordaprompt
+```
 
-    hermes plugins install aska-digital/protean-ordaprompt --ref <40-char commit sha>
-    hermes plugins enable protean-ordaprompt
+Or install from the Hermes plugin catalog (`plugin-catalog/protean-ordaprompt.yaml` in the
+hermes-agent repo). The rendered catalog page is
+[here](https://hermes-agent.nousresearch.com/docs/plugins/protean-ordaprompt).
 
-## What it does
+## How it decides
 
-Given a classification request plus a candidate set (topic candidates and session
-candidates), the router makes ONE backend comparison call per surface, scores all
-candidates, and emits a closed-enum verdict — a `band` plus a `decision` — plus a
-hashes-only RoutingReceipt:
+You send one request: a fingerprint of what was asked (a hash, never the raw text) plus
+your candidate topics and sessions. The router scores every candidate in a single
+comparison, then returns one of three answers:
 
-- band `automatic` — high score AND high margin: route without asking. **LOCKED OFF in this
-  release** (see Calibration below); the band is structurally present but unreachable
-  while `calibration_model_id` is `"none"`.
-- band `fallback_escalate` — in between: the router returns the ranked candidates and the
-  caller asks.
-- band `abstain_or_new_session` — low confidence, novelty, ambiguity, or a new-session
-  signal: the router declines to route and says why. Abstention is a first-class outcome,
-  not a failure.
-- `decision` is one of `topic_assign`, `session_reuse`, `novel_propose`, `escalate`,
-  `new_session` — the concrete outcome within the band.
+- **Route it:** one option clearly wins. High score and a clear gap to second place.
+  This answer is switched off in this release until real-world calibration proves it safe
+  (see below).
+- **Ask first:** the router hands back the ranked options and lets the caller decide.
+- **Abstain:** the router declines and explains why. Low confidence, a genuinely new
+  topic, real ambiguity, or a session that doesn't fit. Abstaining is a designed outcome,
+  not an error.
 
-Session-utility reuse is deliberately stricter than topic utility: a session that wins on
-topic but is contaminated (different project hash) or near-tied never routes automatic.
+Session reuse gets extra scrutiny. A session that matches the topic but belongs to a
+different project, or costs too much context to reload, never wins automatically. If the
+best topic and the best session disagree, the router starts fresh rather than forcing
+a fit.
 
-## Privacy disclosure
+## What it never does
 
-- **No telemetry, no network, no background work.** The package is Python stdlib only.
-  The CLI runs once per invocation and exits.
-- **The optional OpenRouter backend ships DISABLED by policy** (`DisabledByPolicy` is
-  raised if anything tries to use it while disabled; even when enabled, batch scoring is
-  gated off — the adapter permits only taxonomy proposals). Even when an operator
-  explicitly enables it, the transport carries **hashes and labels only** —
-  no free text, no prompts, no file contents, no paths. A privacy validator
-  (`assert_no_free_text`) re-checks every outbound payload and receipt; violations raise
-  `PrivacyViolationError` and nothing is written.
-- **Receipts are hashes + structured scores only** (closed fields, closed domains,
-  append-only). The receipt writer refuses free text. No prompt text, user content, or
-  session state is ever serialized into a receipt, log, or the catalog metadata.
-- **This repository contains only synthetic fixtures** (generated by `eval/fixturegen.py`)
-  and demo request/candidate JSON with placeholder IDs. No hosted prompt data, no real
-  session transcripts, no user state.
+- **No guessing.** A weak score never routes.
+- **No silent automation.** The automatic answer stays locked until calibration on real
+  feedback data passes a strict bar. The synthetic tests honestly miss that bar, so this
+  release ships locked.
+- **No spying.** Pure Python, no extra dependencies. No network calls, no background
+  work, nothing sent anywhere.
+- **No raw text in its records.** Every receipt stores hashes and scores only. A built-in
+  check rejects any receipt containing free text, and nothing is written when it trips.
 
-## Capability boundary
+The optional OpenRouter connection proposes new topic names after a strong novelty
+signal. It ships switched off and stays off unless you enable it for one call. Even then
+it carries hashes and labels only.
 
-- Declares **no tools, no hooks, no middleware, no settings** (`config_schema: {}`).
-  It does not hook the session loop, does not read the Hermes profile config, and does
-  not write anything outside the receipts directory an operator explicitly passes with
-  `--receipts-dir`.
-- No Hermes core changes are required or made. Integration is one catalog YAML entry
-  plus this self-contained source tree.
-- The routing surface is the CLI only: `python3 -m ordaprompt_router.cli classify` and
-  `route-session`. Callers that want automatic routing must wire it themselves — and it
-  will refuse to route automatically (fallback/locked) until the calibration gate below passes.
+## Try it
 
-## Required configuration
+```sh
+git clone https://github.com/aska-digital/protean-ordaprompt
+cd protean-ordaprompt
+python3 -m ordaprompt_router.cli classify \
+  --request eval/demo/request.json \
+  --candidates eval/demo/candidates.json \
+  --receipts-dir receipts/ --compact
+```
 
-None. The plugin runs with defaults (`RouterConfig()`) with the OpenRouter backend
-disabled and the automatic band locked. Optional, explicit, per-invocation JSON:
+Exit codes: `0` means a decision was produced. `2` means your input was malformed (nothing
+was written). `3` means a receipt failed its privacy check (nothing was written).
 
-- `--config router-config.json` — thresholds, legacy fallback, backend declaration.
-- `--calibration calibration.json` — a `CalibrationModel` document; shipping
-  `eval/calibration.json` records the **locked** state (`model_id: "none"`, active false).
-- `--enable-openrouter` — explicitly enables the (hashes-only) OpenRouter backend for
-  that invocation. Default OFF everywhere.
+## How it was tested
 
-## Supported platforms
+400 synthetic test cases, 267 for tuning and 133 held out. On the held-out set: every
+topic label right, no contaminated session ever reused, and the router abstained on 27%
+of cases. These tests prove the machinery works. They don't prove real-world accuracy,
+which is exactly why the automatic answer stays locked. Run them yourself:
 
-Any platform running Python 3.11+ (macOS, Linux). Stdlib only — no Python dependencies
-to install. The catalog entry declares `platforms: []` (all platforms).
+```sh
+python3 eval/harness.py --self-test   # 60 internal checks
+python3 eval/harness.py               # the 400 cases
+python3 -m unittest discover -s test -p 'test_*.py' -v
+python3 eval/negative_probes.py       # 5 fail-closed scenarios
+```
 
-## Failure and abstention behavior (fail-closed)
+## Details for integrators
 
-| Condition | Behavior |
-| --- | --- |
-| OpenRouter used while disabled | `DisabledByPolicy` raised; nothing sent, nothing written |
-| Malformed request / candidate set | exit code 2, schema error, nothing written |
-| Sub-threshold score or margin | band `abstain_or_new_session` (never `automatic`) |
-| Ambiguity: topic and session winners disagree | `new_session` sentinel wins; no route |
-| Contaminated session (project hash mismatch) | session never promoted |
-| Receipt fails privacy/schema validation | exit code 3, receipt rejected, nothing written |
-| Any unexpected backend error | `BackendError`; the decision is `new_session` (abstain), not a guess |
+- Declares no tools, hooks, or settings. It doesn't touch the Hermes session loop or read
+  your Hermes config. Its only surface is the command line.
+- Needs Python 3.11 or newer. Nothing to install beyond the plugin itself.
+- Optional per-call settings via `--config` and `--calibration` JSON files. No
+  configuration is required.
+- Receipts append to a JSONL file in the directory you pass with `--receipts-dir`.
+- MIT licensed.
 
-The rule is uniform: when the router cannot prove the safe choice, it abstains and
-reports why; it never guesses.
+## Links
 
-## Calibration lock (release state)
-
-The automatic band is LOCKED until calibration unlock criteria pass **on real feedback
-data**: expected calibration error (ECE) ≤ 0.05 per surface. The synthetic harness
-honestly reports ECE 0.1330 (topic) / 0.0635 (session) — above the gate — so production
-ships `calibration_model_id="none"`, active=false, and the harness prints
-`calibration unlocked=False production_model=none`. Until real-data calibration passes,
-routing outcomes are `fallback_escalate` or `abstain_or_new_session`, never
-`automatic`.
-
-## Evaluation
-
-    python3 eval/harness.py --self-test   # 60 internal checks
-    python3 eval/harness.py               # 400 synthetic fixtures (267 tuning / 133 holdout)
-
-Current holdout: topic accuracy 1.0000, automatic-band precision 1.0000, contamination
-0.0000, abstain rate 0.2707 — on synthetic data only, which is exactly why the
-automatic band stays locked.
-
-## Tests
-
-    python3 -m unittest discover -s test -p 'test_*.py' -v
-    python3 eval/negative_probes.py     # 5/5 fail-closed negatives
-
-## Layout
-
-    ordaprompt_router/   the package (schemas, adapter, router, receipts, cli)
-    eval/                offline harness, fixture generator, negative probes, calibration
-    test/                unittest smoke tests
-    plugin.yaml          Hermes plugin manifest (manifest_version 1, api_version 1)
+- Project site: <https://aska-digital.github.io/protean-ordaprompt/>
+- Rendered catalog page: <https://hermes-agent.nousresearch.com/docs/plugins/protean-ordaprompt>
+- Catalog PR: [NousResearch/hermes-agent#119124](https://github.com/NousResearch/hermes-agent/pull/119124)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
